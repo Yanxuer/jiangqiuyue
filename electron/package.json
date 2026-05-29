@@ -1,0 +1,60 @@
+{
+    "name": "ai-agent-desktop",
+    "version": "1.0.0",
+    "main": "main.js",
+    "scripts": {
+        "dev": "concurrently -k \"npm run dev:frontend\" \"npm run dev:electron\"",
+        "dev:frontend": "cd ../frontend && npx vite",
+        "dev:electron": "npx wait-on http://localhost:5173/main_window/index.html && electron .",
+        "build": "cd ../frontend && npx vite build && node scripts/copy-static.js && cd ../electron && node scripts/build-rust.js && node scripts/copy-frontend.js && electron-builder --win",
+        "build:win": "electron-builder --win",
+        "build:mac": "electron-builder --mac",
+        "postinstall": "electron-builder install-app-deps"
+    },
+    "devDependencies": {
+        "electron": "^28.0.0",
+        "electron-builder": "^24.9.1",
+        "concurrently": "^8.2.2",
+        "wait-on": "^7.2.0"
+    },
+    "build": {
+        "appId": "com.yourcompany.aiagent",
+        "productName": "AI Agent",
+        "asar": true,
+        "directories": {
+            "output": "dist",
+            "buildResources": "../resources"
+        },
+        "files": [
+            "main.js",
+            "preload*.js"
+        ],
+        "extraResources": [
+            {
+                "from": "frontend-dist",
+                "to": "frontend-dist",
+                "filter": ["**/*"]
+            },
+            {
+                "from": "rust-dist",
+                "to": "backend-dist",
+                "filter": ["**/*"]
+            },
+            {
+                "from": "../resources",
+                "to": "resources",
+                "filter": ["**/*"]
+            }
+        ],
+        "win": {
+            "target": "portable",
+            "icon": "../resources/icons/icon.ico",
+            "sign": false,
+            "signAndEditExecutable": false
+        },
+        "mac": {
+            "target": "dmg",
+            "icon": "../resources/icons/icon.icns"
+        }
+    }
+}

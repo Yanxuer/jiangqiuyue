@@ -1,0 +1,69 @@
+# ==================== 环境 & 密钥 ====================
+.env
+*.local
+
+# ==================== Rust 编译产物 ====================
+backend-rust/target/
+backend-rust/**/*.exe
+backend-rust/**/*.pdb
+backend-rust/**/*.exp
+backend-rust/**/*.lib
+backend-rust/**/.rustc_info.json
+backend-rust/**/CACHEDIR.TAG
+
+# ==================== NPM / Node ====================
+node_modules/
+frontend/node_modules/
+electron/node_modules/
+frontend/package-lock.json
+electron/package-lock.json
+
+# ==================== 前端构建产物 ====================
+frontend/dist/
+electron/frontend-dist/
+electron/rust-dist/
+
+# ==================== Electron 打包输出 ====================
+electron/dist/
+electron/release/
+*.exe
+
+# ==================== 数据库 & 缓存 ====================
+**/memory_db/
+**/model_cache/
+**/software_cache.json
+**/.software_scanned
+*.db
+*.sqlite3
+*.db-journal
+*.db-wal
+
+# ==================== IDE / 编辑器 ====================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+
+# ==================== 操作系统文件 ====================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==================== 日志 ====================
+*.log
+logs/
+
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*.egg-info/
+backend/dist/
+backend/build/
+backend/backend.spec
+backend/__pycache__/
+**/*.pyz
+
+# ==================== 设计文档 (内部使用) ====================
+docs/
