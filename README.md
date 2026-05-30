@@ -119,8 +119,8 @@ npm run build
 
 | 文件 | 说明 |
 |------|------|
-| `Qiuyue2.0 1.0.0.exe` | 便携版 (直接运行，绿色免安装) |
-| `Qiuyue2.0 Setup 1.0.0.exe` | NSIS 安装版 |
+| `Qiuyue2.0.exe` | 便携版 (直接运行，绿色免安装) |
+| `Qiuyue2.0 Setup.exe` | NSIS 安装版 |
 
 两个版本均内置了嵌入模型缓存（约 86MB），换电脑无需重新下载。
 

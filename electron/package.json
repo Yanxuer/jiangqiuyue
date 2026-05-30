@@ -47,11 +47,26 @@
             }
         ],
         "win": {
-            "target": ["portable", "nsis"],
+            "target": [
+                {
+                    "target": "portable",
+                    "arch": ["x64"]
+                },
+                {
+                    "target": "nsis",
+                    "arch": ["x64"]
+                }
+            ],
             "icon": "../resources/icons/icon.ico",
             "sign": false,
             "signAndEditExecutable": false,
             "compression": "normal"
+        },
+        "nsis": {
+            "artifactName": "${productName} Setup.${ext}"
+        },
+        "portable": {
+            "artifactName": "${productName}.${ext}"
         },
         "mac": {
             "target": "dmg",
