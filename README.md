@@ -54,22 +54,35 @@ ai-agent-desktop/
 - Rust 1.75+
 - 一个兼容 OpenAI API 的大模型服务 (或本地 Ollama)
 
-### 配置环境变量
+## 配置说明
+
+本项目支持两套配置方式，可同时使用，运行时配置优先级高于 `.env` 文件。
+
+### 方式一：可视化配置窗口（推荐，打包版用户）
+
+首次启动打包版 exe 时，会自动弹出环境配置窗口，可视化填写：
+
+- **API Key** — 服务商提供的密钥（如 DeepSeek / OpenAI）
+- **接口地址** — API 的基础 URL（默认 `https://api.deepseek.com`）
+- **模型名称** — 使用的模型名（如 `deepseek-chat` / `gpt-4o`）
+
+配置保存在 `memory_db/runtime_config.json`，无需手动编辑文件。
+
+### 方式二：`.env` 文件（开发者 / 源码运行）
 
 ```bash
-# 在项目根目录创建 .env
-cp .env.example .env
+# 在 backend-rust/ 目录下创建 .env
+# （已包含在 .gitignore 中，不会提交到仓库）
+DEEPSEEK_API_KEY=sk-your-key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+MODEL=deepseek-chat
 ```
 
-编辑 `.env` 填入你的 API 配置：
+### 优先级（高 → 低）
 
-```env
-OPENAI_API_KEY=sk-your-key
-OPENAI_BASE_URL=https://api.openai.com/v1
-MODEL_NAME=gpt-4o
 ```
-
-> **提示**：如果直接运行打包版，首次启动会自动弹出可视化配置窗口，无需手动编辑 `.env` 文件。
+可视化窗口配置 (runtime_config.json)  →  .env 文件  →  系统环境变量
+```
 
 ### 安装 & 运行
 
