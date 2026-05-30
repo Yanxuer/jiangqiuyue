@@ -74,7 +74,7 @@ if (fs.existsSync(srcMemory)) {
 }
 
 // Copy model cache (pre-downloaded embedding model)
-const srcModelCache = path.join(__dirname, '..', 'rust-dist', 'model_cache');
+const srcModelCache = path.join(projectRoot, '..', 'model_cache');
 const destModelCache = path.join(rustDistDir, 'model_cache');
 if (fs.existsSync(srcModelCache)) {
     function copyDir(src, dest) {
@@ -91,9 +91,11 @@ if (fs.existsSync(srcModelCache)) {
         }
     }
     copyDir(srcModelCache, destModelCache);
-    console.log('  model_cache/');
+    const stats = fs.statSync(path.join(destModelCache, 'hub', 'models--Qdrant--all-MiniLM-L6-v2-onnx', 'snapshots', 'bbd7b466f6d58e646fdc2bd5fd67b2f5e93c0b687011bd4548c420f7bd46f0c5', 'model.onnx'));
+    console.log(`  model_cache/ (model.onnx ${(stats.size / 1024 / 1024).toFixed(1)} MB)`);
 } else {
     console.warn('Warning: model_cache not found at', srcModelCache);
+    console.warn('  Run "node scripts/download-model.js" first to download the embedding model');
 }
 
 console.log('=== Rust backend build complete ===');

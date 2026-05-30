@@ -47,10 +47,11 @@
             }
         ],
         "win": {
-            "target": "portable",
+            "target": ["portable", "nsis"],
             "icon": "../resources/icons/icon.ico",
             "sign": false,
-            "signAndEditExecutable": false
+            "signAndEditExecutable": false,
+            "compression": "normal"
         },
         "mac": {
             "target": "dmg",

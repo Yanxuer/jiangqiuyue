@@ -18,7 +18,7 @@ use backend_core::{
     config::Config,
     doc_reader::{self, DocReader},
     file_tools::FileTools,
-    memory::AgentMemory,
+    memory::{AgentMemory, MemoryMode, MemoryStatus},
     screen,
     software_scanner,
 };
@@ -70,24 +70,39 @@ struct PendingCommandInfo {
     reason: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ConfigUpdateRequest {
+    deepseek_api_key: Option<String>,
+    deepseek_base_url: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigResponse {
+    configured: bool,
+    deepseek_base_url: String,
+    model: String,
+    has_api_key: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
-    let config = Config::from_env().unwrap_or_else(|e| {
-        eprintln!("{}", e);
-        std::process::exit(1);
-    });
+    let mut config = Config::from_env();
+    log::info!("配置加载完成 (已配置: {})", config.is_configured());
 
-    log::info!("配置加载完成");
+    let memory_path = config.memory_path.clone();
 
-    // 诊断日志：打印环境变量
+    config.apply_runtime_config(&memory_path);
+
     log::info!("[诊断] MEMORY_PATH: {:?}", config.memory_path);
     log::info!("[诊断] WORKSPACE: {:?}", config.workspace);
     log::info!("[诊断] HF_HOME: {:?}", std::env::var("HF_HOME").unwrap_or_default());
     log::info!("[诊断] FASTEMBED_CACHE_DIR: {:?}", std::env::var("FASTEMBED_CACHE_DIR").unwrap_or_default());
     if let Ok(hf_home) = std::env::var("HF_HOME") {
-        let model_dir = std::path::Path::new(&hf_home).join("models--Qdrant--all-MiniLM-L6-v2-onnx");
+        let hub_dir = std::path::Path::new(&hf_home).join("hub");
+        let model_dir = hub_dir.join("models--Qdrant--all-MiniLM-L6-v2-onnx");
         log::info!("[诊断] 模型缓存目录存在: {} (snapshots:{}, refs:{})",
             model_dir.display(),
             model_dir.join("snapshots").exists(),
@@ -108,10 +123,7 @@ async fn main() -> anyhow::Result<()> {
 
     let file_tools = Arc::new(FileTools::new(config.workspace.clone()));
     let memory = Arc::new(Mutex::new(
-        AgentMemory::new(&config.memory_path).unwrap_or_else(|e| {
-            log::error!("初始化记忆系统失败: {}，使用降级模式（无向量搜索）", e);
-            AgentMemory::new_empty(&config.memory_path)
-        })
+        AgentMemory::new(&config.memory_path)
     ));
 
     let agent = Arc::new(Mutex::new(Agent::new(
@@ -129,7 +141,6 @@ async fn main() -> anyhow::Result<()> {
         tx,
     };
 
-    // 后台软件扫描
     let scan_state = state.clone();
     tokio::spawn(async move {
         log::info!("[启动] 开始后台静默扫描电脑软件...");
@@ -138,7 +149,6 @@ async fn main() -> anyhow::Result<()> {
         scan_state.software_scan_complete.notify_waiters();
     });
 
-    // 同时标记软件扫描为完成（防止阻塞）
     let state_clone = state.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -147,11 +157,12 @@ async fn main() -> anyhow::Result<()> {
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::PUT])
         .allow_headers(Any);
 
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/config", get(config_get_handler).put(config_update_handler))
         .route("/chat", post(chat_handler))
         .route("/file/read", post(file_read_handler))
         .route("/file/write", post(file_write_handler))
@@ -159,6 +170,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/memory/search", post(memory_search_handler))
         .route("/memory/add", post(memory_add_handler))
         .route("/memory/status", get(memory_status_handler))
+        .route("/memory/retry", post(memory_retry_handler))
+        .route("/memory/switch", post(memory_switch_handler))
         .route("/cli/pending", get(cli_pending_handler))
         .route("/cli/confirm/{command_id}", post(cli_confirm_handler))
         .route("/cli/reject/{command_id}", post(cli_reject_handler))
@@ -188,6 +201,51 @@ async fn health_check() -> Json<StatusResponse> {
     Json(StatusResponse {
         status: "ok".to_string(),
     })
+}
+
+async fn config_get_handler(
+    State(state): State<AppState>,
+) -> Json<ConfigResponse> {
+    let agent = state.agent.lock().await;
+    let cfg = agent.get_config();
+    Json(ConfigResponse {
+        configured: cfg.is_configured(),
+        deepseek_base_url: cfg.deepseek_base_url.clone(),
+        model: cfg.model.clone(),
+        has_api_key: !cfg.deepseek_api_key.is_empty(),
+    })
+}
+
+async fn config_update_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ConfigUpdateRequest>,
+) -> Json<serde_json::Value> {
+    let mut agent = state.agent.lock().await;
+    let mut new_config = agent.get_config().clone();
+
+    if let Some(key) = &req.deepseek_api_key {
+        if !key.is_empty() {
+            new_config.deepseek_api_key = key.clone();
+        }
+    }
+    if let Some(url) = &req.deepseek_base_url {
+        if !url.is_empty() {
+            new_config.deepseek_base_url = url.clone();
+        }
+    }
+    if let Some(model) = &req.model {
+        if !model.is_empty() {
+            new_config.model = model.clone();
+        }
+    }
+
+    new_config.save_to_file(&state.config.memory_path);
+    agent.update_config(new_config);
+
+    Json(serde_json::json!({
+        "success": true,
+        "configured": !agent.get_config().deepseek_api_key.is_empty()
+    }))
 }
 
 async fn chat_handler(
@@ -276,13 +334,59 @@ async fn memory_add_handler(
 
 async fn memory_status_handler(
     State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+) -> Json<MemoryStatus> {
     let agent = state.agent.lock().await;
     let memory = agent.memory().lock().await;
-    let available = memory.is_available();
+    Json(memory.get_status())
+}
+
+async fn memory_retry_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let agent = state.agent.lock().await;
+    let mut memory = agent.memory().lock().await;
+    match memory.retry_embedder() {
+        Ok(()) => {
+            let status = memory.get_status();
+            Json(serde_json::json!({
+                "success": true,
+                "mode": status.mode,
+                "available": status.available,
+                "retry_count": status.retry_count,
+            }))
+        }
+        Err(e) => {
+            let status = memory.get_status();
+            Json(serde_json::json!({
+                "success": false,
+                "mode": status.mode,
+                "available": status.available,
+                "retry_count": status.retry_count,
+                "last_error": status.last_error,
+                "error": e.to_string(),
+            }))
+        }
+    }
+}
+
+async fn memory_switch_handler(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let mode_str = params.get("mode").map(|s| s.as_str()).unwrap_or("sql");
+    let mode = match mode_str {
+        "vector" => MemoryMode::Vector,
+        _ => MemoryMode::Sql,
+    };
+
+    let agent = state.agent.lock().await;
+    let mut memory = agent.memory().lock().await;
+    memory.switch_mode(mode.clone());
+
     Json(serde_json::json!({
-        "available": available,
-        "mode": if available { "vector" } else { "sql_fallback" }
+        "success": true,
+        "mode": mode.to_string(),
+        "available": memory.is_available(),
     }))
 }
 

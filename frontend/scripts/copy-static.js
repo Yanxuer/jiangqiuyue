@@ -41,6 +41,17 @@ console.log('Copying static JS files...');
 copyStaticFiles('main_window', ['app.js', 'style.css']);
 copyStaticFiles('float_window', ['sprite.js', 'character.js', 'style.css']);
 
+// Inject style.css reference back into built index.html (Vite truncates CSS processing)
+const mainHtmlPath = path.join(distDir, 'main_window', 'index.html');
+if (fs.existsSync(mainHtmlPath)) {
+    let html = fs.readFileSync(mainHtmlPath, 'utf-8');
+    if (!html.includes('href="style.css"')) {
+        html = html.replace('</head>', '  <link rel="stylesheet" href="style.css">\n</head>');
+        fs.writeFileSync(mainHtmlPath, html, 'utf-8');
+        console.log('  ✓ injected style.css link into main_window/index.html');
+    }
+}
+
 console.log('Copying character resources...');
 const resourcesSrc = path.join(srcDir, 'resources', 'character');
 const resourcesDest = path.join(distDir, 'resources', 'character');

@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use std::env;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub deepseek_api_key: String,
     pub deepseek_base_url: String,
@@ -11,11 +12,9 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self, String> {
-        let api_key = Self::load_api_key()?;
-
-        Ok(Config {
-            deepseek_api_key: api_key,
+    pub fn from_env() -> Self {
+        Config {
+            deepseek_api_key: Self::load_api_key(),
             deepseek_base_url: env::var("DEEPSEEK_BASE_URL")
                 .unwrap_or_else(|_| "https://api.deepseek.com".to_string()),
             model: env::var("MODEL").unwrap_or_else(|_| "deepseek-chat".to_string()),
@@ -25,16 +24,19 @@ impl Config {
             memory_path: Self::resolve_path(
                 env::var("MEMORY_PATH").unwrap_or_else(|_| "./memory_db".to_string()),
             ),
-        })
+        }
     }
 
-    fn load_api_key() -> Result<String, String> {
+    pub fn is_configured(&self) -> bool {
+        !self.deepseek_api_key.is_empty()
+    }
+
+    fn load_api_key() -> String {
         if let Ok(key) = env::var("DEEPSEEK_API_KEY") {
             if !key.is_empty() {
-                return Ok(key);
+                return key;
             }
         }
-
         let cwd = env::current_dir().ok();
         let mut env_paths = vec![
             PathBuf::from("./.env"),
@@ -45,7 +47,6 @@ impl Config {
             env_paths.push(cwd.join("../.env"));
             env_paths.push(cwd.join("../../.env"));
         }
-
         for env_path in &env_paths {
             if env_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(env_path) {
@@ -58,20 +59,14 @@ impl Config {
                             let key = line[..eq_pos].trim();
                             let value = line[eq_pos + 1..].trim().trim_matches('"').trim_matches('\'');
                             if key == "DEEPSEEK_API_KEY" && !value.is_empty() {
-                                return Ok(value.to_string());
+                                return value.to_string();
                             }
                         }
                     }
                 }
             }
         }
-
-        Err(
-            "未设置 DEEPSEEK_API_KEY 环境变量\n    \
-             方式1: 在项目根目录创建 .env 文件，写入: DEEPSEEK_API_KEY=sk-xxx\n    \
-             方式2: 通过 `set DEEPSEEK_API_KEY=sk-xxx` 设置环境变量"
-                .to_string(),
-        )
+        String::new()
     }
 
     fn resolve_path(path_str: String) -> PathBuf {
@@ -82,5 +77,49 @@ impl Config {
             }
         }
         path
+    }
+
+    pub fn config_file_path(memory_path: &PathBuf) -> PathBuf {
+        let mut p = memory_path.clone();
+        if p.is_file() {
+            p.pop();
+        }
+        p.join("runtime_config.json")
+    }
+
+    pub fn save_to_file(&self, memory_path: &PathBuf) {
+        let path = Self::config_file_path(memory_path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    pub fn load_from_file(memory_path: &PathBuf) -> Option<Self> {
+        let path = Self::config_file_path(memory_path);
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(config) = serde_json::from_str::<Config>(&content) {
+                    return Some(config);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn apply_runtime_config(&mut self, memory_path: &PathBuf) {
+        if let Some(runtime) = Self::load_from_file(memory_path) {
+            if !runtime.deepseek_api_key.is_empty() {
+                self.deepseek_api_key = runtime.deepseek_api_key;
+            }
+            if !runtime.deepseek_base_url.is_empty() {
+                self.deepseek_base_url = runtime.deepseek_base_url;
+            }
+            if !runtime.model.is_empty() {
+                self.model = runtime.model;
+            }
+        }
     }
 }

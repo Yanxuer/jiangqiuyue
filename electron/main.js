@@ -132,7 +132,7 @@ function startRustBackend() {
             MEMORY_PATH: path.join(cwd, 'memory_db'),
             WORKSPACE: path.join(cwd, 'workspace'),
             HF_HOME: path.join(cwd, 'model_cache'),
-            FASTEMBED_CACHE_DIR: path.join(cwd, 'model_cache', 'models--Qdrant--all-MiniLM-L6-v2-onnx'),
+            HF_ENDPOINT: process.env.HF_ENDPOINT || 'https://hf-mirror.com',
         },
         cwd: cwd,
         detached: false,

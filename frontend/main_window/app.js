@@ -8,6 +8,10 @@ let reconnectTimer = null;
 let backendReady = false;
 let connectingActive = false;
 
+let currentModel = 'deepseek-chat';
+let currentBaseUrl = 'https://api.deepseek.com';
+let currentApiKey = '';
+
 const dialogMessages = document.getElementById('dialogMessages');
 const dialogInput = document.getElementById('dialogInput');
 const dialogSendBtn = document.getElementById('dialogSendBtn');
@@ -42,6 +46,7 @@ function showMainUI() {
         window.electronAPI.showFloatWindow();
     }
     connectWebSocket();
+    checkBackendConfig();
 }
 
 function startEntranceSequence() {
@@ -993,7 +998,10 @@ async function searchSoftware() {
 setInterval(refreshSoftwareBadge, 10000);
 refreshSoftwareBadge();
 
-/* ==================== 记忆状态 ==================== */
+/* ==================== 记忆状态 & 模式面板 ==================== */
+
+let memoryPanelOpen = false;
+let memoryRetryInProgress = false;
 
 async function refreshMemoryStatus() {
     try {
@@ -1002,19 +1010,158 @@ async function refreshMemoryStatus() {
         const dot = document.getElementById('memoryStatusDot');
         const text = document.getElementById('memoryStatusText');
         const badge = document.getElementById('memoryStatus');
-        if (data.available) {
+        if (data.mode === 'vector') {
             dot.className = 'memory-status-dot online';
             text.textContent = '记忆';
             badge.title = '向量记忆库在线';
+        } else if (data.mode === 'retrying') {
+            dot.className = 'memory-status-dot online';
+            text.textContent = '重试中';
+            badge.title = '向量记忆正在重试...';
         } else {
             dot.className = 'memory-status-dot fallback';
             text.textContent = '记忆';
             badge.title = '使用SQL降级模式';
         }
+        if (memoryPanelOpen && document.getElementById('memoryPanel').classList.contains('open')) {
+            updateMemoryPanel(data);
+        }
     } catch {
         const dot = document.getElementById('memoryStatusDot');
         dot.className = 'memory-status-dot offline';
     }
+}
+
+function toggleMemoryPanel() {
+    const panel = document.getElementById('memoryPanel');
+    memoryPanelOpen = !panel.classList.contains('open');
+    if (memoryPanelOpen) {
+        panel.classList.add('open');
+        refreshMemoryPanel();
+    } else {
+        panel.classList.remove('open');
+    }
+}
+
+function closeMemoryPanel() {
+    document.getElementById('memoryPanel').classList.remove('open');
+    memoryPanelOpen = false;
+}
+
+async function refreshMemoryPanel() {
+    try {
+        const res = await fetch(`${API_BASE}/memory/status`);
+        const data = await res.json();
+        updateMemoryPanel(data);
+    } catch (err) {
+        appLog('获取记忆状态失败:', err.message);
+    }
+}
+
+function updateMemoryPanel(data) {
+    const modeMap = { vector: '向量模式', sql: 'SQL模式', retrying: '重试中...' };
+    const statusMap = { vector: '✅ 正常运行', sql: '⚠️ 降级运行', retrying: '🔄 正在重试' };
+
+    document.getElementById('memoryPanelMode').textContent = modeMap[data.mode] || data.mode;
+    document.getElementById('memoryPanelStatus').textContent = statusMap[data.mode] || '-';
+    document.getElementById('memoryPanelRetryCount').textContent = `${data.retry_count}/${data.max_retries}`;
+
+    const errorRow = document.getElementById('memoryPanelErrorRow');
+    const errorEl = document.getElementById('memoryPanelError');
+    if (data.last_error) {
+        errorRow.style.display = 'flex';
+        errorEl.textContent = data.last_error;
+    } else {
+        errorRow.style.display = 'none';
+        errorEl.textContent = '';
+    }
+
+    const btnVector = document.getElementById('memoryBtnVector');
+    const btnSql = document.getElementById('memoryBtnSql');
+    const btnRetry = document.getElementById('memoryBtnRetry');
+
+    btnVector.disabled = (data.mode === 'vector' || memoryRetryInProgress);
+    btnSql.disabled = (data.mode === 'sql' || memoryRetryInProgress);
+    btnRetry.disabled = memoryRetryInProgress || (data.mode === 'vector');
+
+    btnVector.classList.toggle('active', data.mode === 'vector');
+    btnSql.classList.toggle('active', data.mode === 'sql');
+
+    renderMemoryLogs(data.vector_logs || []);
+}
+
+function renderMemoryLogs(logs) {
+    const container = document.getElementById('memoryPanelLogs');
+    if (!logs || logs.length === 0) {
+        container.innerHTML = '<div class="memory-log-empty">暂无日志</div>';
+        return;
+    }
+    container.innerHTML = logs.map(log => {
+        const levelClass = log.level.toUpperCase();
+        return `<div class="memory-log-entry">
+            <span class="memory-log-time">${escapeHtml(log.time)}</span>
+            <span class="memory-log-level ${levelClass}">${escapeHtml(log.level)}</span>
+            <span class="memory-log-msg">${escapeHtml(log.message)}</span>
+        </div>`;
+    }).join('');
+    container.scrollTop = container.scrollHeight;
+}
+
+async function switchMemoryMode(mode) {
+    if (memoryRetryInProgress) return;
+    try {
+        const res = await fetch(`${API_BASE}/memory/switch?mode=${mode}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            appLog(`记忆模式已切换到: ${mode}`);
+            await refreshMemoryPanel();
+            await refreshMemoryStatus();
+        }
+    } catch (err) {
+        appLog('切换记忆模式失败:', err.message);
+    }
+}
+
+async function retryVectorMemory() {
+    if (memoryRetryInProgress) return;
+    memoryRetryInProgress = true;
+    const btn = document.getElementById('memoryBtnRetry');
+    btn.disabled = true;
+    btn.textContent = '⏳ 重试中...';
+
+    try {
+        const res = await fetch(`${API_BASE}/memory/retry`, { method: 'POST' });
+        const data = await res.json();
+        await refreshMemoryPanel();
+        await refreshMemoryStatus();
+
+        if (data.success) {
+            appLog('向量记忆重试成功');
+        } else {
+            appLog('向量记忆重试失败:', data.last_error || data.error);
+            if (data.retry_count >= data.max_retries) {
+                showMemoryRetryError(data.last_error || data.error || '未知错误');
+            }
+        }
+    } catch (err) {
+        appLog('向量记忆重试请求失败:', err.message);
+        showMemoryRetryError(err.message);
+    } finally {
+        memoryRetryInProgress = false;
+        btn.disabled = false;
+        btn.textContent = '🔄 重试向量';
+        await refreshMemoryPanel();
+        await refreshMemoryStatus();
+    }
+}
+
+function showMemoryRetryError(errorDetail) {
+    document.getElementById('memoryRetryErrorDetail').textContent = errorDetail || '无详细信息';
+    document.getElementById('memoryRetryErrorModal').classList.add('open');
+}
+
+function closeMemoryRetryError() {
+    document.getElementById('memoryRetryErrorModal').classList.remove('open');
 }
 
 setInterval(refreshMemoryStatus, 15000);
@@ -1275,4 +1422,232 @@ document.addEventListener('click', (e) => {
             document.getElementById('docNavBtn').classList.remove('active');
         }
     }
+});
+
+/* ==================== 配置 / 设置系统 ==================== */
+
+async function checkBackendConfig() {
+    try {
+        const res = await fetch(`${API_BASE}/config`);
+        if (!res.ok) return;
+        const data = await res.json();
+        appLog('后端配置状态:', JSON.stringify(data));
+
+        currentBaseUrl = data.deepseek_base_url;
+        currentModel = data.model;
+        populateModelSelector(data.model);
+
+        if (!data.configured) {
+            const setupWizard = document.getElementById('setupWizard');
+            setupWizard.classList.add('show');
+        }
+    } catch (err) {
+        appLog('获取配置失败:', err.message);
+    }
+}
+
+function populateModelSelector(activeModel) {
+    const sel = document.getElementById('modelSelector');
+    sel.innerHTML = '';
+
+    const presets = [
+        { label: 'DeepSeek Chat', value: 'deepseek-chat', url: 'https://api.deepseek.com' },
+        { label: 'DeepSeek Reasoner', value: 'deepseek-reasoner', url: 'https://api.deepseek.com' },
+        { label: 'GPT-4o', value: 'gpt-4o', url: 'https://api.openai.com' },
+        { label: 'GPT-4-turbo', value: 'gpt-4-turbo', url: 'https://api.openai.com' },
+        { label: 'GPT-3.5-turbo', value: 'gpt-3.5-turbo', url: 'https://api.openai.com' },
+        { label: 'Moonshot v1 8k', value: 'moonshot-v1-8k', url: 'https://api.moonshot.cn/v1' },
+        { label: 'Moonshot v1 32k', value: 'moonshot-v1-32k', url: 'https://api.moonshot.cn/v1' },
+        { label: 'Qwen Plus', value: 'qwen-plus', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+        { label: 'Qwen Max', value: 'qwen-max', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+        { label: 'SiliconFlow DeepSeek V3', value: 'deepseek-ai/DeepSeek-V3', url: 'https://api.siliconflow.cn/v1' },
+        { label: 'SiliconFlow Qwen', value: 'Qwen/Qwen2.5-72B-Instruct', url: 'https://api.siliconflow.cn/v1' },
+        { label: '本地模型 (LM Studio)', value: 'local-model', url: 'http://localhost:1234/v1' },
+    ];
+
+    const alreadyAdded = new Set();
+    const opt = document.createElement('option');
+    opt.value = '__custom__';
+    opt.textContent = '✏️ 自定义模型...';
+    sel.appendChild(opt);
+
+    const separator = document.createElement('option');
+    separator.disabled = true;
+    separator.textContent = '──────────';
+    sel.appendChild(separator);
+
+    for (const p of presets) {
+        if (alreadyAdded.has(p.value)) continue;
+        alreadyAdded.add(p.value);
+        const option = document.createElement('option');
+        option.value = p.value;
+        option.textContent = p.label;
+        option.dataset.url = p.url;
+        sel.appendChild(option);
+    }
+
+    if (activeModel) {
+        const exists = presets.some(p => p.value === activeModel);
+        if (exists) {
+            sel.value = activeModel;
+        } else {
+            const customOpt = document.createElement('option');
+            customOpt.value = activeModel;
+            customOpt.textContent = `✏️ ${activeModel}`;
+            customOpt.selected = true;
+            sel.insertBefore(customOpt, sel.firstChild);
+        }
+    }
+}
+
+function onModelChanged(value) {
+    if (value === '__custom__') {
+        openSettings();
+        return;
+    }
+    const sel = document.getElementById('modelSelector');
+    const selectedOpt = sel.querySelector(`option[value="${value}"]`);
+    const url = selectedOpt?.dataset?.url;
+    if (url) {
+        currentBaseUrl = url;
+        currentModel = value;
+        saveConfigToBackend(currentApiKey, url, value);
+    }
+}
+
+async function saveConfigToBackend(apiKey, baseUrl, model) {
+    try {
+        const res = await fetch(`${API_BASE}/config`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                deepseek_api_key: apiKey || null,
+                deepseek_base_url: baseUrl || null,
+                model: model || null
+            })
+        });
+        const data = await res.json();
+        appLog('配置保存结果:', JSON.stringify(data));
+        return data;
+    } catch (err) {
+        appLogError('保存配置失败:', err.message);
+        return { success: false };
+    }
+}
+
+function openSettings() {
+    const modal = document.getElementById('settingsModal');
+    document.getElementById('settingsBaseUrl').value = currentBaseUrl;
+    document.getElementById('settingsModel').value = currentModel;
+    document.getElementById('settingsApiKey').value = currentApiKey;
+    document.getElementById('settingsConfigStatus').textContent = '';
+    document.querySelectorAll('.settings-provider-card').forEach(c => c.classList.remove('active'));
+    modal.classList.add('show');
+}
+
+function closeSettings() {
+    document.getElementById('settingsModal').classList.remove('show');
+}
+
+async function saveSettings() {
+    const apiKey = document.getElementById('settingsApiKey').value.trim();
+    const baseUrl = document.getElementById('settingsBaseUrl').value.trim();
+    const model = document.getElementById('settingsModel').value.trim();
+
+    if (!apiKey && !baseUrl.match(/^http:\/\/localhost/)) {
+        document.getElementById('settingsConfigStatus').textContent = '⚠️ 请输入 API Key (本地部署可留空)';
+        document.getElementById('settingsConfigStatus').style.color = '#f59e0b';
+        return;
+    }
+
+    document.getElementById('settingsConfigStatus').textContent = '⏳ 保存中...';
+    document.getElementById('settingsConfigStatus').style.color = 'var(--text-secondary)';
+
+    const result = await saveConfigToBackend(apiKey, baseUrl, model);
+    if (result.success) {
+        currentApiKey = apiKey;
+        currentBaseUrl = baseUrl;
+        currentModel = model;
+        populateModelSelector(model);
+        document.getElementById('settingsConfigStatus').textContent = '✅ 配置已保存';
+        document.getElementById('settingsConfigStatus').style.color = '#22c55e';
+        setTimeout(() => {
+            closeSettings();
+            updateConnectionStatus(true);
+        }, 800);
+    } else {
+        document.getElementById('settingsConfigStatus').textContent = '❌ 保存失败，请重试';
+        document.getElementById('settingsConfigStatus').style.color = '#ef4444';
+    }
+}
+
+function selectProvider(el, provider) {
+    document.querySelectorAll('.settings-provider-card').forEach(c => c.classList.remove('active'));
+    el.classList.add('active');
+
+    const baseUrl = el.dataset.baseUrl;
+    const model = el.dataset.model;
+
+    const settingsModal = document.getElementById('settingsModal');
+    const setupWizard = document.getElementById('setupWizard');
+
+    if (settingsModal.classList.contains('show')) {
+        document.getElementById('settingsBaseUrl').value = baseUrl;
+        document.getElementById('settingsModel').value = model;
+    }
+    if (setupWizard.classList.contains('show')) {
+        document.getElementById('wizardBaseUrl').value = baseUrl;
+        document.getElementById('wizardModel').value = model;
+    }
+}
+
+function toggleApiKeyVisibility() {
+    const input = document.getElementById('settingsApiKey');
+    input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+function toggleWizardApiKeyVisibility() {
+    const input = document.getElementById('wizardApiKey');
+    input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+function dismissSetupWizard() {
+    document.getElementById('setupWizard').classList.remove('show');
+}
+
+async function saveSetupWizard() {
+    const apiKey = document.getElementById('wizardApiKey').value.trim();
+    const baseUrl = document.getElementById('wizardBaseUrl').value.trim();
+    const model = document.getElementById('wizardModel').value.trim();
+
+    if (!apiKey && !baseUrl.match(/^http:\/\/localhost/)) {
+        document.getElementById('wizardConfigStatus').textContent = '⚠️ 请输入 API Key';
+        document.getElementById('wizardConfigStatus').style.color = '#f59e0b';
+        return;
+    }
+
+    document.getElementById('wizardConfigStatus').textContent = '⏳ 保存中...';
+    document.getElementById('wizardConfigStatus').style.color = 'var(--text-secondary)';
+
+    const result = await saveConfigToBackend(apiKey, baseUrl, model);
+    if (result.success) {
+        currentApiKey = apiKey;
+        currentBaseUrl = baseUrl;
+        currentModel = model;
+        populateModelSelector(model);
+        document.getElementById('wizardConfigStatus').textContent = '✅ 配置已保存，准备就绪！';
+        document.getElementById('wizardConfigStatus').style.color = '#22c55e';
+        setTimeout(() => {
+            document.getElementById('setupWizard').classList.remove('show');
+            updateConnectionStatus(true);
+        }, 600);
+    } else {
+        document.getElementById('wizardConfigStatus').textContent = '❌ 保存失败，请重试';
+        document.getElementById('wizardConfigStatus').style.color = '#ef4444';
+    }
+}
+
+document.addEventListener('click', (e) => {
+    if (e.target === document.getElementById('settingsModal')) closeSettings();
+    if (e.target === document.getElementById('setupWizard')) dismissSetupWizard();
 });

@@ -219,7 +219,7 @@
                 </div>
                 <div class="dialog-header-right">
                     <div class="software-badge" id="softwareBadge" onclick="openSoftwarePanel()" title="查看可用软件">💻 <span id="softwareCount">...</span></div>
-                    <div class="memory-status" id="memoryStatus" title="向量记忆库状态">
+                    <div class="memory-status" id="memoryStatus" title="点击查看/切换记忆模式" onclick="toggleMemoryPanel()">
                         <span class="memory-status-dot" id="memoryStatusDot"></span>
                         <span class="memory-status-text" id="memoryStatusText">记忆</span>
                     </div>
@@ -240,6 +240,12 @@
             </div>
 
             <div class="dialog-input-area">
+                <div class="dialog-input-toolbar">
+                    <div class="model-selector-wrapper">
+                        <select id="modelSelector" class="model-select-dropdown" onchange="onModelChanged(this.value)"></select>
+                        <button class="model-settings-btn" onclick="openSettings()" title="模型设置">⚙️</button>
+                    </div>
+                </div>
                 <textarea id="dialogInput" class="dialog-input" placeholder="输入指令，按 Enter 发送..." rows="1" oninput="autoResize(this)" onkeydown="handleKeyDown(event)"></textarea>
                 <button class="dialog-send-btn" id="dialogSendBtn" onclick="sendMessage()">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4 20-7z"/></svg>
@@ -298,6 +304,65 @@
                     <input type="text" id="memorySearchInput" class="memory-search-input" placeholder="输入搜索关键词..." autofocus onkeydown="if(event.key==='Enter')executeMemorySearch()">
                     <button class="memory-search-btn" onclick="executeMemorySearch()">搜索</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 记忆模式面板 -->
+    <div class="memory-panel" id="memoryPanel">
+        <div class="memory-panel-header">
+            <span>🧠 记忆模式</span>
+            <button class="memory-panel-close" onclick="closeMemoryPanel()">✕</button>
+        </div>
+        <div class="memory-panel-body">
+            <div class="memory-panel-row">
+                <span class="memory-panel-label">当前模式</span>
+                <span class="memory-panel-value" id="memoryPanelMode">-</span>
+            </div>
+            <div class="memory-panel-row">
+                <span class="memory-panel-label">状态</span>
+                <span class="memory-panel-value" id="memoryPanelStatus">-</span>
+            </div>
+            <div class="memory-panel-row" id="memoryPanelRetryRow">
+                <span class="memory-panel-label">重试次数</span>
+                <span class="memory-panel-value" id="memoryPanelRetryCount">0/3</span>
+            </div>
+            <div class="memory-panel-row" id="memoryPanelErrorRow" style="display:none">
+                <span class="memory-panel-label">错误信息</span>
+                <div class="memory-panel-error" id="memoryPanelError"></div>
+            </div>
+            <div class="memory-panel-actions">
+                <button class="memory-panel-btn btn-vector" id="memoryBtnVector" onclick="switchMemoryMode('vector')">切换到向量</button>
+                <button class="memory-panel-btn btn-sql" id="memoryBtnSql" onclick="switchMemoryMode('sql')">切换到SQL</button>
+                <button class="memory-panel-btn btn-retry" id="memoryBtnRetry" onclick="retryVectorMemory()">🔄 重试向量</button>
+            </div>
+            <div class="memory-panel-logs">
+                <div class="memory-panel-logs-header">向量日志</div>
+                <div class="memory-panel-logs-list" id="memoryPanelLogs">
+                    <div class="memory-log-empty">暂无日志</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 向量记忆重试错误弹窗 -->
+    <div class="modal-overlay" id="memoryRetryErrorModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>⚠️ 向量记忆重试失败</h3>
+                <button class="modal-close" onclick="closeMemoryRetryError()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="memory-error-detail">
+                    <p>多次重试后向量记忆仍然无法启动，已自动降级为 SQL 模式。</p>
+                    <div class="memory-error-box">
+                        <div class="memory-error-box-label">错误详情：</div>
+                        <pre id="memoryRetryErrorDetail" class="memory-error-pre"></pre>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn" onclick="closeMemoryRetryError()">知道了</button>
             </div>
         </div>
     </div>
@@ -396,5 +461,143 @@
     </div>
 
     <script src="app.js"></script>
+<div class="modal-overlay" id="settingsModal">
+        <div class="modal modal-settings">
+            <div class="modal-header">
+                <h3>⚙️ 模型设置</h3>
+                <button class="modal-close" onclick="closeSettings()">✕</button>
+            </div>
+            <div class="settings-modal-body">
+                <div class="settings-section">
+                    <div class="settings-section-title">选择服务商</div>
+                    <div class="settings-provider-grid" id="providerGrid">
+                        <div class="settings-provider-card" data-base-url="https://api.deepseek.com" data-model="deepseek-chat" onclick="selectProvider(this, 'deepseek')">
+                            <div class="provider-icon">🧠</div>
+                            <div class="provider-name">DeepSeek</div>
+                            <div class="provider-desc">deepseek-chat</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.openai.com" data-model="gpt-4o" onclick="selectProvider(this, 'openai')">
+                            <div class="provider-icon">🤖</div>
+                            <div class="provider-name">OpenAI</div>
+                            <div class="provider-desc">GPT-4o / GPT-4-turbo</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.moonshot.cn/v1" data-model="moonshot-v1-8k" onclick="selectProvider(this, 'moonshot')">
+                            <div class="provider-icon">🌙</div>
+                            <div class="provider-name">Moonshot</div>
+                            <div class="provider-desc">Kimi 月之暗面</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://dashscope.aliyuncs.com/compatible-mode/v1" data-model="qwen-plus" onclick="selectProvider(this, 'qwen')">
+                            <div class="provider-icon">☁️</div>
+                            <div class="provider-name">阿里通义</div>
+                            <div class="provider-desc">Qwen 系列</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.siliconflow.cn/v1" data-model="deepseek-ai/DeepSeek-V3" onclick="selectProvider(this, 'silicon')">
+                            <div class="provider-icon">💎</div>
+                            <div class="provider-name">SiliconFlow</div>
+                            <div class="provider-desc">硅基流动</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="http://localhost:1234/v1" data-model="local-model" onclick="selectProvider(this, 'local')">
+                            <div class="provider-icon">🖥️</div>
+                            <div class="provider-name">本地部署</div>
+                            <div class="provider-desc">LM Studio / Ollama</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <div class="settings-section-title">连接配置</div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">API 地址</label>
+                        <input type="text" id="settingsBaseUrl" class="settings-input" placeholder="https://api.deepseek.com" />
+                    </div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">模型名称</label>
+                        <input type="text" id="settingsModel" class="settings-input" placeholder="deepseek-chat" />
+                    </div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">API Key</label>
+                        <input type="password" id="settingsApiKey" class="settings-input" placeholder="sk-..." />
+                        <button class="settings-toggle-pwd" onclick="toggleApiKeyVisibility()" tabindex="-1">👁️</button>
+                    </div>
+                </div>
+                <div class="settings-footer">
+                    <div class="settings-status" id="settingsConfigStatus"></div>
+                    <div class="settings-footer-buttons">
+                        <button class="settings-btn settings-btn-secondary" onclick="closeSettings()">取消</button>
+                        <button class="settings-btn settings-btn-primary" onclick="saveSettings()">保存并应用</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="setupWizard">
+        <div class="modal modal-setup">
+            <div class="setup-wizard-header">
+                <div class="setup-wizard-icon">✦</div>
+                <h2>欢迎使用 江秋月 AI Agent</h2>
+                <p class="setup-wizard-subtitle">请先配置 AI 模型以开始使用</p>
+            </div>
+            <div class="setup-wizard-body">
+                <div class="setup-wizard-section">
+                    <div class="settings-section-title">选择 AI 服务商</div>
+                    <div class="settings-provider-grid" id="wizardProviderGrid">
+                        <div class="settings-provider-card" data-base-url="https://api.deepseek.com" data-model="deepseek-chat" onclick="selectProvider(this, 'deepseek')">
+                            <div class="provider-icon">🧠</div>
+                            <div class="provider-name">DeepSeek</div>
+                            <div class="provider-desc">deepseek-chat</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.openai.com" data-model="gpt-4o" onclick="selectProvider(this, 'openai')">
+                            <div class="provider-icon">🤖</div>
+                            <div class="provider-name">OpenAI</div>
+                            <div class="provider-desc">GPT-4o / GPT-4-turbo</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.moonshot.cn/v1" data-model="moonshot-v1-8k" onclick="selectProvider(this, 'moonshot')">
+                            <div class="provider-icon">🌙</div>
+                            <div class="provider-name">Moonshot</div>
+                            <div class="provider-desc">Kimi 月之暗面</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://dashscope.aliyuncs.com/compatible-mode/v1" data-model="qwen-plus" onclick="selectProvider(this, 'qwen')">
+                            <div class="provider-icon">☁️</div>
+                            <div class="provider-name">阿里通义</div>
+                            <div class="provider-desc">Qwen 系列</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.siliconflow.cn/v1" data-model="deepseek-ai/DeepSeek-V3" onclick="selectProvider(this, 'silicon')">
+                            <div class="provider-icon">💎</div>
+                            <div class="provider-name">SiliconFlow</div>
+                            <div class="provider-desc">硅基流动</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="http://localhost:1234/v1" data-model="local-model" onclick="selectProvider(this, 'local')">
+                            <div class="provider-icon">🖥️</div>
+                            <div class="provider-name">本地部署</div>
+                            <div class="provider-desc">LM Studio / Ollama</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="setup-wizard-section">
+                    <div class="settings-section-title">连接配置</div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">API 地址</label>
+                        <input type="text" id="wizardBaseUrl" class="settings-input" placeholder="https://api.deepseek.com" />
+                    </div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">模型名称</label>
+                        <input type="text" id="wizardModel" class="settings-input" placeholder="deepseek-chat" />
+                    </div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">API Key</label>
+                        <input type="password" id="wizardApiKey" class="settings-input" placeholder="sk-..." />
+                        <button class="settings-toggle-pwd" onclick="toggleWizardApiKeyVisibility()" tabindex="-1">👁️</button>
+                    </div>
+                </div>
+            </div>
+            <div class="setup-wizard-footer">
+                <div class="setup-wizard-status" id="wizardConfigStatus"></div>
+                <div class="setup-wizard-buttons">
+                    <button class="settings-btn settings-btn-secondary" onclick="dismissSetupWizard()">稍后设置</button>
+                    <button class="settings-btn settings-btn-primary" onclick="saveSetupWizard()">保存并开始</button>
+                </div>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

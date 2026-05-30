@@ -8,7 +8,8 @@ import shutil
 import urllib.request
 import time
 
-BASE_URL = "https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/main"
+HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+BASE_URL = f"{HF_ENDPOINT}/Qdrant/all-MiniLM-L6-v2-onnx/resolve/main"
 FILES = [
     "model.onnx",
     "tokenizer.json",
@@ -61,7 +62,7 @@ def main():
     output_dir = sys.argv[1]
     os.makedirs(output_dir, exist_ok=True)
 
-    model_cache_dir = os.path.join(output_dir, "models--Qdrant--all-MiniLM-L6-v2-onnx")
+    model_cache_dir = os.path.join(output_dir, "hub", "models--Qdrant--all-MiniLM-L6-v2-onnx")
     blobs_dir = os.path.join(model_cache_dir, "blobs")
     refs_dir = os.path.join(model_cache_dir, "refs")
     os.makedirs(blobs_dir, exist_ok=True)
