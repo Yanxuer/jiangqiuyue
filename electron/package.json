@@ -19,7 +19,7 @@
     },
     "build": {
         "appId": "com.yourcompany.aiagent",
-        "productName": "AI Agent",
+        "productName": "Qiuyue2.0",
         "asar": true,
         "directories": {
             "output": "dist",
