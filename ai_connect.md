@@ -152,9 +152,9 @@ trae-agent/           ← 参考项目（字节跳动开源，已对比分析）
 
 ## 4. 当前工作分支
 
-**代码状态**: 本地编译通过（`cargo build` 0 errors, 0 warnings）
-**Git 状态**: 未提交。上次提交是 `e8be37c 清理远程遗留文件`
-**远程**: origin/main → https://github.com/Yanxuer/jiangqiuyue
+**代码状态**: 编译通过（`cargo build` 0 errors, 0 warnings），29 项集成测试全部通过
+**Git 状态**: 已提交。最新提交 `8d30a31 重构: 多 LLM 提供商架构 + 消除 DeepSeek 硬编码 + 29 项集成测试`
+**远程**: origin/main → https://github.com/Yanxuer/jiangqiuyue（待推送）
 
 ---
 
