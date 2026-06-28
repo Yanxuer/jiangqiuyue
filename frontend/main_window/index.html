@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>江秋月 · AI Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="print" onload="this.media='all'">
+    <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css"></noscript>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.tailwindcss.com" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('[Inline] DOMContentLoaded fired at', Date.now());
+            if (typeof startEntranceSequence === 'function') {
+                startEntranceSequence();
+            } else {
+                console.error('[Inline] startEntranceSequence is not defined!');
+            }
+        });
+        window.addEventListener('error', function(e) {
+            console.error('[Inline] Global error:', e.message || e, e.error ? e.error.stack : '');
+        }, true);
+        window.addEventListener('unhandledrejection', function(e) {
+            console.error('[Inline] Unhandled promise rejection:', e.reason);
+        });
+    </script>
+</head>
+<body>
+
+    <div id="arknightsSplash" class="arknights-splash">
+        <!-- 底层：金属机械纹理基底 -->
+        <div class="splash-metal-bg">
+            <div class="splash-metal-texture"></div>
+            <div class="splash-metal-grid"></div>
+        </div>
+
+        <!-- 能量波纹层 (7层同心圆，冷青蓝+浅银) -->
+        <div class="splash-wave-layer">
+            <div class="splash-wave w1"></div>
+            <div class="splash-wave w2"></div>
+            <div class="splash-wave w3"></div>
+            <div class="splash-wave w4"></div>
+            <div class="splash-wave w5"></div>
+            <div class="splash-wave w6"></div>
+            <div class="splash-wave w7"></div>
+        </div>
+
+        <!-- 金属粒子层 -->
+        <div class="splash-particle-layer">
+            <div class="splash-particle p1"></div>
+            <div class="splash-particle p2"></div>
+            <div class="splash-particle p3"></div>
+            <div class="splash-particle p4"></div>
+            <div class="splash-particle p5"></div>
+            <div class="splash-particle p6"></div>
+            <div class="splash-particle p7"></div>
+            <div class="splash-particle p8"></div>
+            <div class="splash-particle p9"></div>
+            <div class="splash-particle p10"></div>
+        </div>
+
+        <!-- Logo主视觉层 -->
+        <div class="splash-logo-wrapper">
+            <div class="splash-logo-3d">
+                <svg class="splash-logo-svg" viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient id="etchGrad" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stop-color="#7bc9e2"/>
+                            <stop offset="50%" stop-color="#c0e8f5"/>
+                            <stop offset="100%" stop-color="#7bc9e2"/>
+                        </linearGradient>
+                        <linearGradient id="metalBase" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stop-color="#2a2a30"/>
+                            <stop offset="50%" stop-color="#3a3a45"/>
+                            <stop offset="100%" stop-color="#222228"/>
+                        </linearGradient>
+                        <linearGradient id="energyGlow" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stop-color="#7bc9e2" stop-opacity="0"/>
+                            <stop offset="50%" stop-color="#7bc9e2" stop-opacity="0.3"/>
+                            <stop offset="100%" stop-color="#7bc9e2" stop-opacity="0"/>
+                        </linearGradient>
+                        <filter id="etchGlow">
+                            <feGaussianBlur stdDeviation="2" result="blur"/>
+                            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                        </filter>
+                    </defs>
+
+                    <!-- 蚀刻路径(预置描边偏移用于动画) -->
+                    <path class="etch-ring-outer"
+                          d="M120 16 A104 104 0 1 1 119.9 16"
+                          fill="none" stroke="url(#etchGrad)" stroke-width="3" stroke-linecap="round"
+                          stroke-dasharray="654" stroke-dashoffset="654"/>
+
+                    <path class="etch-ring-outer-glow"
+                          d="M120 16 A104 104 0 1 1 119.9 16"
+                          fill="none" stroke="#7bc9e2" stroke-width="6" stroke-linecap="round"
+                          stroke-dasharray="654" stroke-dashoffset="654" opacity="0.3" filter="url(#etchGlow)"/>
+
+                    <path class="etch-ring-inner"
+                          d="M120 32 A88 88 0 1 1 119.9 32"
+                          fill="none" stroke="#8a9bb5" stroke-width="1" stroke-linecap="round"
+                          stroke-dasharray="553" stroke-dashoffset="553"/>
+
+                    <!-- 中央竖脊 -->
+                    <rect class="etch-spine" x="116" y="48" width="8" height="85" fill="url(#metalBase)" rx="1.5"/>
+                    <rect class="etch-spine-glow" x="116" y="48" width="8" height="85" fill="none" stroke="#7bc9e2" stroke-width="1" rx="1.5" opacity="0"/>
+
+                    <!-- 左翼 -->
+                    <polygon class="etch-wing-L1" points="120,58 52,20 70,52" fill="url(#metalBase)"/>
+                    <polygon class="etch-wing-L2" points="120,80 38,66 62,84" fill="url(#metalBase)"/>
+
+                    <!-- 右翼 -->
+                    <polygon class="etch-wing-R1" points="120,58 188,20 170,52" fill="url(#metalBase)"/>
+                    <polygon class="etch-wing-R2" points="120,80 202,66 178,84" fill="url(#metalBase)"/>
+
+                    <!-- 菱形 -->
+                    <polygon class="etch-rhombus" points="120,145 100,172 120,199 140,172"
+                             fill="none" stroke="url(#etchGrad)" stroke-width="3" stroke-linejoin="round"
+                             stroke-dasharray="160" stroke-dashoffset="160"/>
+
+                    <!-- 侧边横杆 -->
+                    <line class="etch-stab-L" x1="42" y1="120" x2="82" y2="120" stroke="#8a9bb5" stroke-width="2.5"
+                          stroke-dasharray="40" stroke-dashoffset="40"/>
+                    <line class="etch-stab-R" x1="158" y1="120" x2="198" y2="120" stroke="#8a9bb5" stroke-width="2.5"
+                          stroke-dasharray="40" stroke-dashoffset="40"/>
+
+                    <!-- 侧边圆点 -->
+                    <circle class="etch-dot-L" cx="70" cy="170" r="3" fill="#7bc9e2" opacity="0"/>
+                    <circle class="etch-dot-R" cx="170" cy="170" r="3" fill="#7bc9e2" opacity="0"/>
+
+                    <!-- J形抽象笔画 -->
+                    <path class="etch-accent-J" d="M124 115 Q124 143 98 143 Q82 143 82 126"
+                          fill="none" stroke="url(#etchGrad)" stroke-width="3" stroke-linecap="round"
+                          stroke-dasharray="100" stroke-dashoffset="100"/>
+
+                    <!-- 晶质覆盖层 (能量流动) -->
+                    <path class="etch-crystal-overlay"
+                          d="M120 16 A104 104 0 1 1 119.9 16"
+                          fill="none" stroke="url(#energyGlow)" stroke-width="8" opacity="0"/>
+                </svg>
+            </div>
+        </div>
+
+        <!-- 径向能量爆裂纹 -->
+        <div class="splash-burst-layer">
+            <div class="splash-burst b1"></div>
+            <div class="splash-burst b2"></div>
+            <div class="splash-burst b3"></div>
+            <div class="splash-burst b4"></div>
+            <div class="splash-burst b5"></div>
+            <div class="splash-burst b6"></div>
+            <div class="splash-burst b7"></div>
+            <div class="splash-burst b8"></div>
+        </div>
+
+        <!-- 环绕几何碎片 -->
+        <div class="splash-debris-layer">
+            <div class="splash-debris d1"></div>
+            <div class="splash-debris d2"></div>
+            <div class="splash-debris d3"></div>
+            <div class="splash-debris d4"></div>
+            <div class="splash-debris d5"></div>
+            <div class="splash-debris d6"></div>
+        </div>
+
+        <!-- 顶部冷色硬光扫描 -->
+        <div class="splash-light-sweep"></div>
+
+        <!-- 高光闪烁 -->
+        <div class="splash-shine-flash"></div>
+    </div>
+
+    <div id="loginScreen" class="login-screen">
+        <div class="bg-glow-orb glow-orb-1"></div>
+        <div class="bg-glow-orb glow-orb-2"></div>
+        <div class="login-card">
+            <div class="login-avatar">
+                <span>✦</span>
+            </div>
+            <div class="login-name" id="loginNameDisplay"></div>
+            <div class="login-password-row" id="loginPasswordRow">
+                <span class="pwd-dot" data-index="0">○</span>
+                <span class="pwd-dot" data-index="1">○</span>
+                <span class="pwd-dot" data-index="2">○</span>
+                <span class="pwd-dot" data-index="3">○</span>
+                <span class="pwd-dot" data-index="4">○</span>
+                <span class="pwd-dot" data-index="5">○</span>
+                <span class="pwd-dot" data-index="6">○</span>
+                <span class="pwd-dot" data-index="7">○</span>
+            </div>
+            <div class="login-status" id="loginStatus">验证中...</div>
+        </div>
+    </div>
+
+    <div class="app-container" id="appContainer">
+        <div class="bg-glow-orb glow-orb-1"></div>
+        <div class="bg-glow-orb glow-orb-2"></div>
+        <div class="grid-overlay"></div>
+
+        <div class="dialog-container">
+            <div class="dialog-header">
+                <div class="dialog-header-left">
+                    <div class="dialog-brand-icon">✦</div>
+                    <div>
+                        <div class="dialog-brand-name">江秋月</div>
+                        <div class="dialog-brand-sub">AI Agent · 智能体</div>
+                    </div>
+                </div>
+                <div class="dialog-header-center">
+                    <span class="dialog-nav-item active">对话</span>
+                    <span class="dialog-nav-item" onclick="openFileManager()">文件</span>
+                    <span class="dialog-nav-item" onclick="openMemorySearch()">记忆</span>
+                    <span class="dialog-nav-item" id="docNavBtn" onclick="toggleDocSidebar()">文档</span>
+                    <span class="dialog-nav-item" onclick="openCliHub()">CLI-Hub</span>
+                </div>
+                <div class="dialog-header-right">
+                    <div class="software-badge" id="softwareBadge" onclick="openSoftwarePanel()" title="查看可用软件">💻 <span id="softwareCount">...</span></div>
+                    <div class="memory-status" id="memoryStatus" title="点击查看/切换记忆模式" onclick="toggleMemoryPanel()">
+                        <span class="memory-status-dot" id="memoryStatusDot"></span>
+                        <span class="memory-status-text" id="memoryStatusText">记忆</span>
+                    </div>
+                    <div class="connection-status" id="connStatus">
+                        <span class="status-dot connected"></span>
+                        <span class="status-label">已连接</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dialog-messages" id="dialogMessages">
+                <div class="welcome-message">
+                    <div class="welcome-avatar">✦</div>
+                    <h2>你好呀~ 我是江秋月</h2>
+                    <p>游走于信息与创意之间，以理性架构梳理脉络，<br>以细腻感知回应诉求。不问边界，不限场景，<br>做你随心可用的专属智能载体。</p>
+                    <p class="welcome-hint">在下方输入你的指令开始吧</p>
+                </div>
+            </div>
+
+            <div class="dialog-input-area">
+                <div class="dialog-input-toolbar">
+                    <div class="model-selector-wrapper">
+                        <select id="modelSelector" class="model-select-dropdown" onchange="onModelChanged(this.value)"></select>
+                        <button class="model-settings-btn" onclick="openSettings()" title="模型设置">⚙️</button>
+                    </div>
+                </div>
+                <textarea id="dialogInput" class="dialog-input" placeholder="输入指令，按 Enter 发送..." rows="1" oninput="autoResize(this)" onkeydown="handleKeyDown(event)"></textarea>
+                <button class="dialog-send-btn" id="dialogSendBtn" onclick="sendMessage()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4 20-7z"/></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 后端连接等待浮层 -->
+    <div class="connecting-overlay" id="connectingOverlay">
+        <div class="connecting-card">
+            <div class="connecting-spinner"></div>
+            <div class="connecting-title">正在启动服务...</div>
+            <div class="connecting-status" id="connectStatus">正在连接后端服务...</div>
+            <div class="connecting-progress-track">
+                <div class="connecting-progress-fill" id="connectProgress"></div>
+            </div>
+            <button class="connecting-retry-btn" id="connectRetryBtn" onclick="retryBackendConnection()">重试连接</button>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="fileModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>📁 文件管理器</h3>
+                <button class="modal-close" onclick="closeFileManager()">✕</button>
+            </div>
+            <div class="modal-body modal-file-body">
+                <div class="file-tree">
+                    <div class="file-tree-title">工作区文件</div>
+                    <div id="fileList" class="file-list"></div>
+                    <div class="file-path-input">
+                        <input type="text" id="filePathInput" placeholder="输入自定义路径，如 C:\\Users\\..." onkeydown="if(event.key==='Enter')browseCustomPath()">
+                        <button class="file-path-btn" onclick="browseCustomPath()">📂 浏览</button>
+                    </div>
+                </div>
+                <div class="file-browser">
+                    <div class="file-browser-header">
+                        <span id="fileBrowserPath" class="file-path">当前目录</span>
+                        <span id="fileCount" class="file-count"></span>
+                    </div>
+                    <div id="fileBrowserList" class="file-browser-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="memoryModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>🔍 记忆搜索</h3>
+                <button class="modal-close" onclick="closeMemorySearch()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="memory-input-group">
+                    <input type="text" id="memorySearchInput" class="memory-search-input" placeholder="输入搜索关键词..." autofocus onkeydown="if(event.key==='Enter')executeMemorySearch()">
+                    <button class="memory-search-btn" onclick="executeMemorySearch()">搜索</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 记忆模式面板 -->
+    <div class="memory-panel" id="memoryPanel">
+        <div class="memory-panel-header">
+            <span>🧠 记忆模式</span>
+            <button class="memory-panel-close" onclick="closeMemoryPanel()">✕</button>
+        </div>
+        <div class="memory-panel-body">
+            <div class="memory-panel-row">
+                <span class="memory-panel-label">当前模式</span>
+                <span class="memory-panel-value" id="memoryPanelMode">-</span>
+            </div>
+            <div class="memory-panel-row">
+                <span class="memory-panel-label">状态</span>
+                <span class="memory-panel-value" id="memoryPanelStatus">-</span>
+            </div>
+            <div class="memory-panel-row" id="memoryPanelRetryRow">
+                <span class="memory-panel-label">重试次数</span>
+                <span class="memory-panel-value" id="memoryPanelRetryCount">0/3</span>
+            </div>
+            <div class="memory-panel-row" id="memoryPanelErrorRow" style="display:none">
+                <span class="memory-panel-label">错误信息</span>
+                <div class="memory-panel-error" id="memoryPanelError"></div>
+            </div>
+            <div class="memory-panel-actions">
+                <button class="memory-panel-btn btn-vector" id="memoryBtnVector" onclick="switchMemoryMode('vector')">切换到向量</button>
+                <button class="memory-panel-btn btn-sql" id="memoryBtnSql" onclick="switchMemoryMode('sql')">切换到SQL</button>
+                <button class="memory-panel-btn btn-retry" id="memoryBtnRetry" onclick="retryVectorMemory()">🔄 重试向量</button>
+            </div>
+            <div class="memory-panel-logs">
+                <div class="memory-panel-logs-header">向量日志</div>
+                <div class="memory-panel-logs-list" id="memoryPanelLogs">
+                    <div class="memory-log-empty">暂无日志</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 向量记忆重试错误弹窗 -->
+    <div class="modal-overlay" id="memoryRetryErrorModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>⚠️ 向量记忆重试失败</h3>
+                <button class="modal-close" onclick="closeMemoryRetryError()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="memory-error-detail">
+                    <p>多次重试后向量记忆仍然无法启动，已自动降级为 SQL 模式。</p>
+                    <div class="memory-error-box">
+                        <div class="memory-error-box-label">错误详情：</div>
+                        <pre id="memoryRetryErrorDetail" class="memory-error-pre"></pre>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn" onclick="closeMemoryRetryError()">知道了</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- CLI 安全确认模态框 -->
+    <div class="modal-overlay" id="cliConfirmModal">
+        <div class="modal modal-cli">
+            <div class="modal-header">
+                <h3>⚡ CLI 操作确认</h3>
+                <span class="cli-badge" id="cliOpType">执行命令</span>
+            </div>
+            <div class="modal-body">
+                <div class="cli-detail-section">
+                    <div class="cli-detail-label">AI 想执行以下操作：</div>
+                    <div class="cli-reason-box" id="cliReason">加载中...</div>
+                </div>
+                <div class="cli-detail-section">
+                    <div class="cli-detail-label">命令内容：</div>
+                    <div class="cli-command-box">
+                        <code id="cliCommandText">-</code>
+                        <button class="cli-copy-btn" onclick="copyCliCommand()">📋 复制</button>
+                    </div>
+                </div>
+                <div class="cli-detail-section" id="cliFilesSection">
+                    <div class="cli-detail-label">涉及文件路径：</div>
+                    <div class="cli-files-box" id="cliFilesList">无</div>
+                </div>
+                <div class="cli-warning-bar">
+                    <span>🛡️</span>
+                    <span>危险命令（rm -rf、sudo、format 等）已被自动拦截，请放心确认~</span>
+                </div>
+            </div>
+            <div class="cli-modal-footer">
+                <button class="cli-btn cli-btn-reject" onclick="rejectCliCommand()">取消</button>
+                <button class="cli-btn cli-btn-confirm" onclick="confirmCliCommand()">✅ 确认执行</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 软件面板模态框 -->
+    <div class="modal-overlay" id="softwareModal">
+        <div class="modal modal-software">
+            <div class="modal-header">
+                <h3>💻 可用软件概览</h3>
+                <div class="modal-header-right">
+                    <span class="software-scan-status" id="softwareScanStatus">扫描中...</span>
+                    <button class="modal-close" onclick="closeSoftwarePanel()">✕</button>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="software-search-bar">
+                    <input type="text" id="softwareSearchInput" class="software-search-input" placeholder="搜索软件..." onkeydown="if(event.key==='Enter')searchSoftware()">
+                    <button class="software-search-btn" onclick="searchSoftware()">搜索</button>
+                </div>
+                <div class="software-grid" id="softwareGrid">
+                    <div class="software-loading">正在扫描电脑上的软件...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 文档侧边栏 -->
+    <div class="doc-sidebar" id="docSidebar">
+        <div class="doc-sidebar-header">
+            <div class="doc-sidebar-title">📂 文档浏览</div>
+            <button class="doc-sidebar-add" onclick="showPathInput()" title="添加路径">+</button>
+        </div>
+        <div class="doc-sidebar-hint" id="docSidebarHint">点击「+」添加文件夹路径，让 AI 读取文件~</div>
+        <div class="doc-recent-list" id="docRecentList"></div>
+    </div>
+
+    <!-- 路径输入模态框 -->
+    <div class="modal-overlay" id="pathInputModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>📂 选择文件夹路径</h3>
+                <button class="modal-close" onclick="closePathInput()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="path-input-group">
+                    <input type="text" id="pathInput" class="path-input" placeholder="输入文件夹路径，如 C:\\Users\\..." autofocus onkeydown="if(event.key==='Enter')confirmPathSelect()">
+                    <button class="path-browse-btn" onclick="browsePath()">📁 浏览...</button>
+                </div>
+                <div class="path-examples">
+                    <span>快速选择：</span>
+                    <span class="path-chip" onclick="quickPath('desktop')">🖥️ 桌面</span>
+                    <span class="path-chip" onclick="quickPath('downloads')">📥 下载</span>
+                    <span class="path-chip" onclick="quickPath('documents')">📄 文档</span>
+                    <span class="path-chip" onclick="quickPath('workspace')">📁 工作区</span>
+                </div>
+                <div class="path-confirm-row">
+                    <button class="path-confirm-btn" onclick="confirmPathSelect()">✅ 确认并让AI读取</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+<div class="modal-overlay" id="settingsModal">
+        <div class="modal modal-settings">
+            <div class="modal-header">
+                <h3>⚙️ 模型设置</h3>
+                <button class="modal-close" onclick="closeSettings()">✕</button>
+            </div>
+            <div class="settings-modal-body">
+                <div class="settings-section">
+                    <div class="settings-section-title">选择服务商</div>
+                    <div class="settings-provider-grid" id="providerGrid">
+                        <div class="settings-provider-card" data-base-url="https://api.deepseek.com" data-model="deepseek-chat" onclick="selectProvider(this, 'deepseek')">
+                            <div class="provider-icon">🧠</div>
+                            <div class="provider-name">DeepSeek</div>
+                            <div class="provider-desc">deepseek-chat</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.openai.com" data-model="gpt-4o" onclick="selectProvider(this, 'openai')">
+                            <div class="provider-icon">🤖</div>
+                            <div class="provider-name">OpenAI</div>
+                            <div class="provider-desc">GPT-4o / GPT-4-turbo</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.moonshot.cn/v1" data-model="moonshot-v1-8k" onclick="selectProvider(this, 'moonshot')">
+                            <div class="provider-icon">🌙</div>
+                            <div class="provider-name">Moonshot</div>
+                            <div class="provider-desc">Kimi 月之暗面</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://dashscope.aliyuncs.com/compatible-mode/v1" data-model="qwen-plus" onclick="selectProvider(this, 'qwen')">
+                            <div class="provider-icon">☁️</div>
+                            <div class="provider-name">阿里通义</div>
+                            <div class="provider-desc">Qwen 系列</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.siliconflow.cn/v1" data-model="deepseek-ai/DeepSeek-V3" onclick="selectProvider(this, 'silicon')">
+                            <div class="provider-icon">💎</div>
+                            <div class="provider-name">SiliconFlow</div>
+                            <div class="provider-desc">硅基流动</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="http://localhost:1234/v1" data-model="local-model" onclick="selectProvider(this, 'local')">
+                            <div class="provider-icon">🖥️</div>
+                            <div class="provider-name">本地部署</div>
+                            <div class="provider-desc">LM Studio / Ollama</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <div class="settings-section-title">连接配置</div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">API 地址</label>
+                        <input type="text" id="settingsBaseUrl" class="settings-input" placeholder="https://api.deepseek.com" />
+                    </div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">模型名称</label>
+                        <input type="text" id="settingsModel" class="settings-input" placeholder="deepseek-chat" />
+                    </div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">API Key</label>
+                        <input type="password" id="settingsApiKey" class="settings-input" placeholder="sk-..." />
+                        <button class="settings-toggle-pwd" onclick="toggleApiKeyVisibility()" tabindex="-1">👁️</button>
+                    </div>
+                </div>
+                <div class="settings-footer">
+                    <div class="settings-status" id="settingsConfigStatus"></div>
+                    <div class="settings-footer-buttons">
+                        <button class="settings-btn settings-btn-secondary" onclick="closeSettings()">取消</button>
+                        <button class="settings-btn settings-btn-primary" onclick="saveSettings()">保存并应用</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="setupWizard">
+        <div class="modal modal-setup">
+            <div class="setup-wizard-header">
+                <div class="setup-wizard-icon">✦</div>
+                <h2>欢迎使用 江秋月 AI Agent</h2>
+                <p class="setup-wizard-subtitle">请先配置 AI 模型以开始使用</p>
+            </div>
+            <div class="setup-wizard-body">
+                <div class="setup-wizard-section">
+                    <div class="settings-section-title">选择 AI 服务商</div>
+                    <div class="settings-provider-grid" id="wizardProviderGrid">
+                        <div class="settings-provider-card" data-base-url="https://api.deepseek.com" data-model="deepseek-chat" onclick="selectProvider(this, 'deepseek')">
+                            <div class="provider-icon">🧠</div>
+                            <div class="provider-name">DeepSeek</div>
+                            <div class="provider-desc">deepseek-chat</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.openai.com" data-model="gpt-4o" onclick="selectProvider(this, 'openai')">
+                            <div class="provider-icon">🤖</div>
+                            <div class="provider-name">OpenAI</div>
+                            <div class="provider-desc">GPT-4o / GPT-4-turbo</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.moonshot.cn/v1" data-model="moonshot-v1-8k" onclick="selectProvider(this, 'moonshot')">
+                            <div class="provider-icon">🌙</div>
+                            <div class="provider-name">Moonshot</div>
+                            <div class="provider-desc">Kimi 月之暗面</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://dashscope.aliyuncs.com/compatible-mode/v1" data-model="qwen-plus" onclick="selectProvider(this, 'qwen')">
+                            <div class="provider-icon">☁️</div>
+                            <div class="provider-name">阿里通义</div>
+                            <div class="provider-desc">Qwen 系列</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="https://api.siliconflow.cn/v1" data-model="deepseek-ai/DeepSeek-V3" onclick="selectProvider(this, 'silicon')">
+                            <div class="provider-icon">💎</div>
+                            <div class="provider-name">SiliconFlow</div>
+                            <div class="provider-desc">硅基流动</div>
+                        </div>
+                        <div class="settings-provider-card" data-base-url="http://localhost:1234/v1" data-model="local-model" onclick="selectProvider(this, 'local')">
+                            <div class="provider-icon">🖥️</div>
+                            <div class="provider-name">本地部署</div>
+                            <div class="provider-desc">LM Studio / Ollama</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="setup-wizard-section">
+                    <div class="settings-section-title">连接配置</div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">API 地址</label>
+                        <input type="text" id="wizardBaseUrl" class="settings-input" placeholder="https://api.deepseek.com" />
+                    </div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">模型名称</label>
+                        <input type="text" id="wizardModel" class="settings-input" placeholder="deepseek-chat" />
+                    </div>
+                    <div class="settings-form-group">
+                        <label class="settings-label">API Key</label>
+                        <input type="password" id="wizardApiKey" class="settings-input" placeholder="sk-..." />
+                        <button class="settings-toggle-pwd" onclick="toggleWizardApiKeyVisibility()" tabindex="-1">👁️</button>
+                    </div>
+                </div>
+            </div>
+            <div class="setup-wizard-footer">
+                <div class="setup-wizard-status" id="wizardConfigStatus"></div>
+                <div class="setup-wizard-buttons">
+                    <button class="settings-btn settings-btn-secondary" onclick="dismissSetupWizard()">稍后设置</button>
+                    <button class="settings-btn settings-btn-primary" onclick="saveSetupWizard()">保存并开始</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CLI-Hub 模态框 -->
+    <div class="modal-overlay" id="cliHubModal">
+        <div class="modal modal-cli-hub">
+            <div class="modal-header">
+                <h3>🔧 CLI-Hub · 命令行工具</h3>
+                <button class="modal-close" onclick="closeCliHub()">✕</button>
+            </div>
+            <div class="modal-body cli-hub-body">
+                <!-- 工具栏 -->
+                <div class="cli-hub-toolbar">
+                    <input type="text" id="cliHubSearch" class="cli-hub-search" placeholder="搜索 CLI 工具..." oninput="filterCliHub()" />
+                    <select id="cliHubCategory" class="cli-hub-category" onchange="filterCliHub()">
+                        <option value="">全部分类</option>
+                    </select>
+                    <select id="cliHubSource" class="cli-hub-source" onchange="filterCliHub()">
+                        <option value="all">全部来源</option>
+                        <option value="harness">CLI-Anything 社区</option>
+                        <option value="public">第三方官方</option>
+                    </select>
+                    <button class="cli-hub-refresh-btn" onclick="refreshCliHub()" title="刷新">🔄</button>
+                </div>
+                <!-- 标签页 -->
+                <div class="cli-hub-tabs">
+                    <span class="cli-hub-tab active" onclick="switchCliHubTab('browse')">浏览</span>
+                    <span class="cli-hub-tab" onclick="switchCliHubTab('installed')">已安装</span>
+                    <span class="cli-hub-tab" onclick="switchCliHubTab('guide')">教程</span>
+                </div>
+                <!-- 浏览列表 -->
+                <div class="cli-hub-list" id="cliHubList">
+                    <div class="cli-hub-loading">加载中...</div>
+                </div>
+                <!-- 已安装列表 -->
+                <div class="cli-hub-list" id="cliHubInstalledList" style="display:none">
+                    <div class="cli-hub-loading">加载中...</div>
+                </div>
+                <!-- 详情面板 -->
+                <div class="cli-hub-detail" id="cliHubDetail" style="display:none">
+                    <div class="cli-hub-detail-header">
+                        <span class="cli-hub-detail-back" onclick="closeCliHubDetail()">← 返回列表</span>
+                        <span class="cli-hub-detail-name" id="cliHubDetailName"></span>
+                    </div>
+                    <div class="cli-hub-detail-body">
+                        <div class="cli-hub-detail-desc" id="cliHubDetailDesc"></div>
+                        <div class="cli-hub-detail-meta">
+                            <span class="cli-hub-meta-tag" id="cliHubDetailVersion"></span>
+                            <span class="cli-hub-meta-tag" id="cliHubDetailCategory"></span>
+                            <span class="cli-hub-meta-tag" id="cliHubDetailSource"></span>
+                        </div>
+                        <div class="cli-hub-detail-actions">
+                            <button class="cli-hub-detail-btn btn-install" id="cliHubInstallBtn" onclick="installCliHub()">安装</button>
+                            <button class="cli-hub-detail-btn btn-uninstall" id="cliHubUninstallBtn" onclick="uninstallCliHub()" style="display:none">卸载</button>
+                        </div>
+                        <div class="cli-hub-detail-status" id="cliHubDetailStatus"></div>
+                    </div>
+                </div>
+                <!-- 教程面板 -->
+                <div class="cli-hub-guide" id="cliHubGuide" style="display:none">
+                    <div class="cli-hub-guide-loading">加载教程中...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

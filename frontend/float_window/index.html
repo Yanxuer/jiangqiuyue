@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>江秋月 - 虚拟形象</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="characterCanvas"></canvas>
+
+        <div class="bubble" id="bubble">
+            <span id="bubbleText">你好呀~ 我是江秋月</span>
+        </div>
+
+        <div class="status-indicator" id="statusIndicator">
+            <span class="status-dot" id="statusDot"></span>
+            <span class="status-text" id="statusText">在线</span>
+        </div>
+
+        <div class="quick-chat-input" id="quickChat">
+            <input type="text" id="quickChatInput" placeholder="快速提问..." maxlength="100">
+            <button onclick="sendQuickChat()">发送</button>
+        </div>
+    </div>
+
+    <div class="context-menu" id="contextMenu">
+        <div class="menu-item" onclick="showMainWindow()">💬 打开主窗口</div>
+        <div class="menu-item" onclick="captureScreen()">📸 截屏分析</div>
+        <div class="menu-item" onclick="toggleQuickChat()">❓ 快速对话</div>
+        <div class="menu-divider"></div>
+        <div class="menu-item" onclick="togglePin()">📌 置顶切换</div>
+        <div class="menu-item" onclick="hideFloat()">🪟 隐藏悬浮窗</div>
+    </div>
+
+    <script src="sprite.js"></script>
+    <script src="character.js"></script>
+    <script>
+        const WS_URL = 'ws://127.0.0.1:8000/ws';
+        const API_BASE = 'http://127.0.0.1:8000';
+
+        const canvas = document.getElementById('characterCanvas');
+        const bubble = document.getElementById('bubble');
+        const bubbleText = document.getElementById('bubbleText');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const contextMenu = document.getElementById('contextMenu');
+        const quickChat = document.getElementById('quickChat');
+
+        let ws = null;
+        let reconnectTimer = null;
+        let bubbleTimer = null;
+        let isAlwaysOnTop = true;
+        let character = null;
+        let spriteAnim = null;
+
+        async function init() {
+            let resourcePath;
+            if (window.electronAPI) {
+                resourcePath = await window.electronAPI.getResourcePath('character/');
+            } else {
+                resourcePath = '../resources/character/';
+            }
+
+            spriteAnim = new SpriteAnimation(canvas, {
+                width: 120,
+                height: 160,
+                fps: 12,
+                resourcePath
+            });
+
+            spriteAnim.addStateWithFrames('idle', 'idle', 30, { loop: true, fps: 12 });
+            spriteAnim.addStateWithFrames('talking', 'talk', 18, { loop: false, fps: 12 });
+            spriteAnim.addStateWithFrames('happy', 'happy', 20, { loop: false, fps: 12 });
+            spriteAnim.addStateWithFrames('thinking', 'thinking', 40, { loop: true, fps: 12 });
+            spriteAnim.addStateWithFrames('click', 'click', 15, { loop: false, fps: 12 });
+            spriteAnim.addStateWithFrames('wave', 'wave', 20, { loop: false, fps: 12 });
+
+            character = new VirtualCharacter(canvas, spriteAnim);
+
+            character.onStateChange = (newState) => {
+                if (newState === 'thinking') {
+                    statusDot.className = 'status-dot thinking';
+                    statusText.textContent = '思考中';
+                } else {
+                    statusDot.className = 'status-dot';
+                    statusText.textContent = '在线';
+                }
+            };
+
+            spriteAnim.loadAll(() => {
+                spriteAnim.play('idle', true);
+            });
+
+            connectWebSocket();
+            setupEventListeners();
+        }
+
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) return;
+
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                statusDot.className = 'status-dot';
+                statusText.textContent = '在线';
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'screen_result') {
+                    const reply = data.data?.reply || '分析完成~';
+                    showBubble(reply);
+                    character.setState('talking');
+                } else if (data.type === 'command') {
+                    if (data.action === 'show_main') {
+                        showMainWindow();
+                    } else if (data.action === 'hide_main') {
+                        if (window.electronAPI?.hideFloatWindow) {
+                            window.electronAPI.hideFloatWindow();
+                        }
+                    }
+                }
+            };
+
+            ws.onclose = () => {
+                statusDot.className = 'status-dot offline';
+                statusText.textContent = '离线';
+                scheduleReconnect();
+            };
+
+            ws.onerror = () => {
+                statusDot.className = 'status-dot offline';
+                statusText.textContent = '离线';
+            };
+        }
+
+        function scheduleReconnect() {
+            if (reconnectTimer) return;
+            reconnectTimer = setInterval(() => {
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    connectWebSocket();
+                } else {
+                    clearInterval(reconnectTimer);
+                    reconnectTimer = null;
+                }
+            }, 3000);
+        }
+
+        function showBubble(text) {
+            const cleanText = text.replace(/```[\s\S]*?```/g, '[代码]').substring(0, 100);
+            bubbleText.textContent = cleanText;
+            bubble.classList.add('show');
+
+            if (bubbleTimer) clearTimeout(bubbleTimer);
+            bubbleTimer = setTimeout(() => {
+                bubble.classList.remove('show');
+            }, 5000);
+        }
+
+        function setupEventListeners() {
+            let isDragging = false;
+            let dragStartX, dragStartY;
+
+            canvas.addEventListener('mousedown', (e) => {
+                if (e.button === 2) return;
+
+                isDragging = false;
+                dragStartX = e.clientX;
+                dragStartY = e.clientY;
+
+                const onMouseMove = (ev) => {
+                    const dx = ev.clientX - dragStartX;
+                    const dy = ev.clientY - dragStartY;
+                    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                        isDragging = true;
+                        if (window.electronAPI?.startDrag) {
+                            window.electronAPI.startDrag();
+                        }
+                        if (window.electronAPI?.dragWindow) {
+                            window.electronAPI.dragWindow(dx, dy);
+                        }
+                        dragStartX = ev.clientX;
+                        dragStartY = ev.clientY;
+                    }
+                };
+
+                const onMouseUp = (ev) => {
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+
+                    if (!isDragging) {
+                        character.handleClick();
+                        hideContextMenu();
+                    }
+                };
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
+
+            canvas.addEventListener('mousemove', (e) => {
+                character.setMousePosition(e.clientX, e.clientY);
+            });
+
+            canvas.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                showContextMenu(e.clientX, e.clientY);
+            });
+
+            document.addEventListener('click', (e) => {
+                if (!contextMenu.contains(e.target) && e.target !== canvas) {
+                    hideContextMenu();
+                }
+                if (!quickChat.contains(e.target)) {
+                    quickChat.classList.remove('show');
+                }
+            });
+
+            document.getElementById('quickChatInput').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') sendQuickChat();
+            });
+        }
+
+        function showContextMenu(x, y) {
+            const rect = contextMenu.getBoundingClientRect();
+            let menuX = Math.min(x, window.innerWidth - rect.width - 10);
+            let menuY = Math.min(y, window.innerHeight - rect.height - 10);
+            menuX = Math.max(10, menuX);
+            menuY = Math.max(10, menuY);
+
+            contextMenu.style.left = menuX + 'px';
+            contextMenu.style.top = menuY + 'px';
+            contextMenu.classList.add('show');
+        }
+
+        function hideContextMenu() {
+            contextMenu.classList.remove('show');
+        }
+
+        function showMainWindow() {
+            if (window.electronAPI?.showMainWindow) {
+                window.electronAPI.showMainWindow();
+            }
+            hideContextMenu();
+        }
+
+        function captureScreen() {
+            hideContextMenu();
+            character.setState('thinking');
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    action: 'capture_and_ask',
+                    question: '描述一下我屏幕上显示的内容'
+                }));
+            }
+        }
+
+        function toggleQuickChat() {
+            hideContextMenu();
+            quickChat.classList.toggle('show');
+            if (quickChat.classList.contains('show')) {
+                document.getElementById('quickChatInput').focus();
+            }
+        }
+
+        async function sendQuickChat() {
+            const input = document.getElementById('quickChatInput');
+            const text = input.value.trim();
+            if (!text) return;
+
+            input.value = '';
+            quickChat.classList.remove('show');
+            character.setState('thinking');
+
+            try {
+                const res = await fetch(`${API_BASE}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text, use_screen: false })
+                });
+                const data = await res.json();
+                if (data.reply) {
+                    showBubble(data.reply);
+                    character.setState('talking');
+                }
+            } catch (err) {
+                showBubble(`请求失败: ${err.message}`);
+                character.setState('idle');
+            }
+        }
+
+        function togglePin() {
+            isAlwaysOnTop = !isAlwaysOnTop;
+            if (window.electronAPI?.togglePin) {
+                window.electronAPI.togglePin(isAlwaysOnTop);
+            }
+            hideContextMenu();
+        }
+
+        function hideFloat() {
+            if (window.electronAPI?.hideFloatWindow) {
+                window.electronAPI.hideFloatWindow();
+            }
+            hideContextMenu();
+        }
+
+        init();
+    </script>
+</body>
+</html>
