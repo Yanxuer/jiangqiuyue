@@ -23,7 +23,9 @@
 - **命令行执行** — 安全确认机制下的命令执行，执行前后详细日志输出
 - **向量记忆系统** — 语义检索历史对话，支持主界面手动切换向量/SQL模式，失败自动重试并弹窗提示
 - **环境配置窗口** — 首次启动弹出，可视化配置 API 密钥、模型、部署地址
-- **自定义模型支持** — 支持任意 OpenAI 兼容 API 的服务商或本地 Ollama 部署
+- **自定义模型支持** — 支持任意 OpenAI 兼容 API 的服务商或本地 Ollama 部署，环境变量可切换 Provider
+- **多 LLM 提供商架构** — 枚举多态设计（DeepSeek / OpenAI），扩展新 Provider 只需加枚举变体 + 默认值
+- **Docker 沙箱** — 容器级命令隔离执行，Docker 不可用时自动降级本地执行
 - **CLI 工具管理** — 扫描、搜索、安装、推荐、执行 CLI 工具
 - **软件管理** — 扫描并启动已安装软件
 - **文档阅读** — 支持 .txt / .md / .pdf / Word / Excel / CSV
@@ -76,10 +78,28 @@ ai-agent-desktop/
 ```bash
 # 在 backend-rust/ 目录下创建 .env
 # （已包含在 .gitignore 中，不会提交到仓库）
+
+# === 通用 LLM 配置（推荐） ===
+LLM_API_KEY=sk-your-key
+LLM_PROVIDER=deepseek
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-v4-flash
+
+# === 旧版兼容（DEEPSEEK_* 作为 fallback） ===
 DEEPSEEK_API_KEY=sk-your-key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 MODEL=deepseek-v4-flash
 ```
+
+**多提供商切换**：
+
+| 提供商 | LLM_PROVIDER | LLM_BASE_URL | 默认模型 |
+|--------|-------------|-------------|---------|
+| DeepSeek | `deepseek` | `https://api.deepseek.com` | `deepseek-v4-flash` |
+| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-4o` |
+| 自定义兼容 | 任意 | 自定义 | 自定义 |
+
+> 未知的 `LLM_PROVIDER` 值默认回退到 DeepSeek 配置，保证向后兼容。
 
 ### 优先级（高 → 低）
 

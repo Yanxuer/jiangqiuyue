@@ -4,6 +4,9 @@ use crate::cli_hub::CliHub;
 use crate::cli_tools;
 use crate::file_tools::FileTools;
 use crate::memory::AgentMemory;
+use crate::llm::provider::LLMProvider;
+use crate::llm::types::{ToolDefinition, LLMToolCall};
+use crate::trajectory::recorder::TrajectoryRecorder;
 use crate::screen;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -44,52 +47,27 @@ pub struct TaskProgress {
     pub error_log: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeepSeekResponse {
-    pub choices: Vec<DeepSeekChoice>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeepSeekChoice {
-    pub message: DeepSeekResponseMessage,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeepSeekResponseMessage {
-    pub role: String,
-    pub content: Option<String>,
-    pub tool_calls: Option<Vec<DeepSeekToolCall>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeepSeekToolCall {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub call_type: String,
-    pub function: DeepSeekFunction,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeepSeekFunction {
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeepSeekRequest {
-    pub model: String,
-    pub messages: Vec<serde_json::Value>,
-    pub tools: Vec<serde_json::Value>,
-    pub tool_choice: String,
-    pub temperature: f32,
-}
-
 #[derive(Debug, Clone)]
 pub struct PendingCommand {
     pub command: String,
     pub cwd: Option<String>,
     pub reason: String,
     pub analysis: cli_executor::CLIRequest,
+}
+
+// ==================== 顺序思维数据结构 ====================
+
+#[derive(Debug, Clone)]
+pub struct ThoughtData {
+    pub thought: String,
+    pub thought_number: u32,
+    pub total_thoughts: u32,
+    pub next_thought_needed: bool,
+    pub is_revision: Option<bool>,
+    pub revises_thought: Option<u32>,
+    pub branch_from_thought: Option<u32>,
+    pub branch_id: Option<String>,
+    pub needs_more_thoughts: Option<bool>,
 }
 
 // ==================== Agent 主体 ====================
@@ -101,11 +79,16 @@ pub struct Agent {
     messages: Vec<ChatMessage>,
     pub pending_commands: Arc<Mutex<HashMap<String, PendingCommand>>>,
     pub cli_hub: Arc<Mutex<CliHub>>,
+    provider: LLMProvider,
+    recorder: Option<TrajectoryRecorder>,
     // 多轮迭代状态
     iteration_count: u32,
     progress: TaskProgress,
     web_search_count: u32,
     file_edit_count: HashMap<String, u32>,
+    // 顺序思维状态
+    thought_history: Vec<ThoughtData>,
+    branches: HashMap<String, Vec<ThoughtData>>,
 }
 
 const MAX_ITERATIONS: u32 = 30;
@@ -118,6 +101,8 @@ impl Agent {
         file_tools: Arc<FileTools>,
         memory: Arc<Mutex<AgentMemory>>,
         cli_hub: CliHub,
+        provider: LLMProvider,
+        recorder: Option<TrajectoryRecorder>,
     ) -> Self {
         Agent {
             config,
@@ -126,6 +111,8 @@ impl Agent {
             messages: vec![Self::system_prompt()],
             pending_commands: Arc::new(Mutex::new(HashMap::new())),
             cli_hub: Arc::new(Mutex::new(cli_hub)),
+            provider,
+            recorder,
             iteration_count: 0,
             progress: TaskProgress {
                 completed: Vec::new(),
@@ -135,6 +122,8 @@ impl Agent {
             },
             web_search_count: 0,
             file_edit_count: HashMap::new(),
+            thought_history: Vec::new(),
+            branches: HashMap::new(),
         }
     }
 
@@ -150,8 +139,9 @@ impl Agent {
         &self.config
     }
 
-    pub fn update_config(&mut self, new_config: Config) {
+    pub fn update_config(&mut self, new_config: Config, new_provider: LLMProvider) {
         self.config = new_config;
+        self.provider = new_provider;
     }
 
     // ==================== 系统提示词 ====================
@@ -229,248 +219,207 @@ ERROR_LOG：出现过的报错与解决方案
 
     // ==================== 工具定义 ====================
 
-    fn tools_definition() -> Vec<serde_json::Value> {
+    fn tools_definition() -> Vec<ToolDefinition> {
         vec![
             // === 5 个标准工具 ===
-            // 1. view_file
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "view_file",
-                    "description": "读取本地文件内容（带行号），或列出指定目录下文件，最多2级文件夹，用于理解项目结构、查看代码",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "本地文件/文件夹绝对路径"},
-                            "start_line": {"type": "integer", "default": 0, "description": "起始行"},
-                            "end_line": {"type": "integer", "default": 50, "description": "结束行"}
-                        },
-                        "required": ["path"]
-                    }
-                }
-            }),
-            // 2. str_replace_edit
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "str_replace_edit",
-                    "description": "修改现有代码、新建文件、删除代码块，精确字符串替换，仅用于代码编写。修改前必须先调用view_file读取原文，确保old_str完全匹配。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "文件路径"},
-                            "old_str": {"type": "string", "description": "需要替换的原文，多行严格匹配；新建文件时填空字符串"},
-                            "new_str": {"type": "string", "description": "替换后的新代码"},
-                            "create_if_missing": {"type": "boolean", "default": true, "description": "文件不存在则创建"}
-                        },
-                        "required": ["path", "new_str"]
-                    }
-                }
-            }),
-            // 3. bash_exec
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "bash_exec",
-                    "description": "执行shell命令：安装依赖、运行程序、git操作、编译项目。高危命令（rm -rf /、格式化磁盘等）会被自动拦截。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string", "description": "单条shell指令"},
-                            "cwd": {"type": "string", "description": "执行工作目录，默认当前项目根目录"},
-                            "timeout": {"type": "integer", "default": 30, "description": "执行超时时间，单位秒"}
-                        },
-                        "required": ["command"]
-                    }
-                }
-            }),
-            // 4. web_search
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "web_search",
-                    "description": "查询编程文档、报错解决方案、第三方库API，仅在本地代码无法解决时调用。单次任务最多调用5次。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "精准检索关键词，一次最多3个查询词"}
-                        },
-                        "required": ["query"]
-                    }
-                }
-            }),
-            // 5. task_complete
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "task_complete",
-                    "description": "所有步骤完成、信息充足后调用，输出完整总结、代码、运行结果，停止工具循环。任务未完成时禁止调用。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "summary": {"type": "string", "description": "任务完成总结，包含修改文件、运行效果、注意事项"}
-                        },
-                        "required": ["summary"]
-                    }
-                }
-            }),
+            ToolDefinition {
+                name: "view_file".to_string(),
+                description: "读取本地文件内容（带行号），或列出指定目录下文件，最多2级文件夹，用于理解项目结构、查看代码".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "本地文件/文件夹绝对路径"},
+                        "start_line": {"type": "integer", "default": 0, "description": "起始行"},
+                        "end_line": {"type": "integer", "default": 50, "description": "结束行"}
+                    },
+                    "required": ["path"]
+                }),
+            },
+            ToolDefinition {
+                name: "str_replace_edit".to_string(),
+                description: "修改现有代码、新建文件、删除代码块，精确字符串替换，仅用于代码编写。修改前必须先调用view_file读取原文，确保old_str完全匹配。".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "文件路径"},
+                        "old_str": {"type": "string", "description": "需要替换的原文，多行严格匹配；新建文件时填空字符串"},
+                        "new_str": {"type": "string", "description": "替换后的新代码"},
+                        "create_if_missing": {"type": "boolean", "default": true, "description": "文件不存在则创建"}
+                    },
+                    "required": ["path", "new_str"]
+                }),
+            },
+            ToolDefinition {
+                name: "bash_exec".to_string(),
+                description: "执行shell命令：安装依赖、运行程序、git操作、编译项目。高危命令（rm -rf /、格式化磁盘等）会被自动拦截。".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "单条shell指令"},
+                        "cwd": {"type": "string", "description": "执行工作目录，默认当前项目根目录"},
+                        "timeout": {"type": "integer", "default": 30, "description": "执行超时时间，单位秒"}
+                    },
+                    "required": ["command"]
+                }),
+            },
+            ToolDefinition {
+                name: "web_search".to_string(),
+                description: "查询编程文档、报错解决方案、第三方库API，仅在本地代码无法解决时调用。单次任务最多调用5次。".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "精准检索关键词，一次最多3个查询词"}
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "task_complete".to_string(),
+                description: "所有步骤完成、信息充足后调用，输出完整总结、代码、运行结果，停止工具循环。任务未完成时禁止调用。".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string", "description": "任务完成总结，包含修改文件、运行效果、注意事项"}
+                    },
+                    "required": ["summary"]
+                }),
+            },
             // === 扩展工具 ===
-            // 6. capture_screen
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "capture_screen",
-                    "description": "截取用户屏幕并分析当前显示内容",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "monitor": {"type": "integer", "description": "屏幕编号，1为主屏", "default": 1}
-                        },
-                        "required": []
-                    }
-                }
-            }),
-            // 7. search_memory
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "search_memory",
-                    "description": "从长期记忆中搜索相关信息",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "搜索关键词或问题"}
-                        },
-                        "required": ["query"]
-                    }
-                }
-            }),
-            // 8. add_memory
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "add_memory",
-                    "description": "将重要信息保存到长期记忆",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "content": {"type": "string"}
-                        },
-                        "required": ["content"]
-                    }
-                }
-            }),
-            // 9. find_software
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "find_software",
-                    "description": "搜索本机已安装的软件",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "软件名称关键词"}
-                        },
-                        "required": ["query"]
-                    }
-                }
-            }),
-            // 10. launch_software
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "launch_software",
-                    "description": "启动本机软件",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "软件可执行文件路径"}
-                        },
-                        "required": ["path"]
-                    }
-                }
-            }),
-            // 11. list_clis
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "list_clis",
-                    "description": "列出 CLI-Hub 中所有可用的 CLI 工具，支持按分类或来源筛选",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "category": {"type": "string", "description": "按分类筛选"},
-                            "source": {"type": "string", "enum": ["harness", "public", "all"], "description": "按来源筛选"}
-                        },
-                        "required": []
-                    }
-                }
-            }),
-            // 12. search_clis
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "search_clis",
-                    "description": "在 CLI-Hub 注册表中搜索 CLI 工具",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "搜索关键词"}
-                        },
-                        "required": ["query"]
-                    }
-                }
-            }),
-            // 13. install_cli
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "install_cli",
-                    "description": "安装指定的 CLI 工具",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string", "description": "CLI 工具名称"}
-                        },
-                        "required": ["name"]
-                    }
-                }
-            }),
-            // 14. execute_cli
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "execute_cli",
-                    "description": "执行已安装 CLI 的命令",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string", "description": "CLI 工具名称"},
-                            "command": {"type": "string", "description": "要执行的命令"}
-                        },
-                        "required": ["name", "command"]
-                    }
-                }
-            }),
-            // 15. recommend_clis
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": "recommend_clis",
-                    "description": "根据已安装软件推荐可用的 CLI 工具",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "software_names": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "软件名称列表"
-                            }
-                        },
-                        "required": ["software_names"]
-                    }
-                }
-            }),
+            ToolDefinition {
+                name: "capture_screen".to_string(),
+                description: "截取用户屏幕并分析当前显示内容".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "monitor": {"type": "integer", "description": "屏幕编号，1为主屏", "default": 1}
+                    },
+                    "required": []
+                }),
+            },
+            ToolDefinition {
+                name: "search_memory".to_string(),
+                description: "从长期记忆中搜索相关信息".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "搜索关键词或问题"}
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "add_memory".to_string(),
+                description: "将重要信息保存到长期记忆".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string"}
+                    },
+                    "required": ["content"]
+                }),
+            },
+            ToolDefinition {
+                name: "find_software".to_string(),
+                description: "搜索本机已安装的软件".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "软件名称关键词"}
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "launch_software".to_string(),
+                description: "启动本机软件".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "软件可执行文件路径"}
+                    },
+                    "required": ["path"]
+                }),
+            },
+            ToolDefinition {
+                name: "list_clis".to_string(),
+                description: "列出 CLI-Hub 中所有可用的 CLI 工具，支持按分类或来源筛选".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "category": {"type": "string", "description": "按分类筛选"},
+                        "source": {"type": "string", "enum": ["harness", "public", "all"], "description": "按来源筛选"}
+                    },
+                    "required": []
+                }),
+            },
+            ToolDefinition {
+                name: "search_clis".to_string(),
+                description: "在 CLI-Hub 注册表中搜索 CLI 工具".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "搜索关键词"}
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "install_cli".to_string(),
+                description: "安装指定的 CLI 工具".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "CLI 工具名称"}
+                    },
+                    "required": ["name"]
+                }),
+            },
+            ToolDefinition {
+                name: "execute_cli".to_string(),
+                description: "执行已安装 CLI 的命令".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "CLI 工具名称"},
+                        "command": {"type": "string", "description": "要执行的命令"}
+                    },
+                    "required": ["name", "command"]
+                }),
+            },
+            ToolDefinition {
+                name: "recommend_clis".to_string(),
+                description: "根据已安装软件推荐可用的 CLI 工具".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "software_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "软件名称列表"
+                        }
+                    },
+                    "required": ["software_names"]
+                }),
+            },
+            ToolDefinition {
+                name: "sequentialthinking".to_string(),
+                description: "顺序思维工具，用于将复杂问题分解为逐步思考过程。每个思考可以建立、质疑或修正之前的见解。".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "thought": {"type": "string", "description": "当前的思考步骤内容"},
+                        "next_thought_needed": {"type": "boolean", "description": "是否还需要继续思考"},
+                        "thought_number": {"type": "integer", "description": "当前是第几步思考，从1开始"},
+                        "total_thoughts": {"type": "integer", "description": "预估总思考步数"},
+                        "is_revision": {"type": "boolean", "description": "是否在修订之前的思考"},
+                        "revises_thought": {"type": "integer", "description": "如果是在修订，标明修订第几步"},
+                        "branch_from_thought": {"type": "integer", "description": "从哪一步开始分支"},
+                        "branch_id": {"type": "string", "description": "分支标识符"},
+                        "needs_more_thoughts": {"type": "boolean", "description": "是否还需要更多思考"}
+                    },
+                    "required": ["thought", "next_thought_needed", "thought_number", "total_thoughts"]
+                }),
+            },
         ]
     }
 
@@ -493,6 +442,13 @@ ERROR_LOG：出现过的报错与解决方案
         };
         self.web_search_count = 0;
         self.file_edit_count.clear();
+        self.thought_history.clear();
+        self.branches.clear();
+
+        // 轨迹录制：任务开始
+        if let Some(ref mut recorder) = self.recorder {
+            recorder.start(user_input, self.provider.name(), self.provider.model());
+        }
 
         // 构建用户消息
         let user_message = if let Some(b64) = image_base64 {
@@ -543,13 +499,49 @@ ERROR_LOG：出现过的报错与解决方案
                 });
             }
 
-            // 调用 LLM
-            let response = self.call_deepseek().await?;
-            let tool_calls = response.tool_calls.clone().unwrap_or_default();
+            // 调用 LLM（通过 provider）
+            let message_payload: Vec<crate::llm::types::LLMMessage> = self.messages.iter()
+                .map(|m| {
+                    crate::llm::types::LLMMessage {
+                        role: m.role.clone(),
+                        content: m.content.as_ref().map(|c| match c {
+                            serde_json::Value::String(s) => s.clone(),
+                            _ => c.to_string(),
+                        }),
+                        tool_calls: m.tool_calls.as_ref().map(|tcs| {
+                            tcs.iter().map(|tc| LLMToolCall {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                arguments: serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                            }).collect()
+                        }),
+                        tool_call_id: m.tool_call_id.clone(),
+                        name: m.name.clone(),
+                    }
+                })
+                .collect();
+
+            let tools = Self::tools_definition();
+            let llm_response = self.provider.chat(&message_payload, Some(&tools)).await?;
+            let resp_msg = &llm_response.message;
+
+            // 轨迹录制：LLM 调用
+            if let Some(ref mut recorder) = self.recorder {
+                recorder.record_llm_call(
+                    self.iteration_count,
+                    &message_payload,
+                    resp_msg.content.as_deref(),
+                    resp_msg.tool_calls.as_deref(),
+                    llm_response.usage.as_ref(),
+                    None,
+                );
+            }
+
+            let tool_calls = resp_msg.tool_calls.clone().unwrap_or_default();
 
             // 无工具调用 → 直接返回内容
             if tool_calls.is_empty() {
-                let reply = response.content.unwrap_or_default();
+                let reply = resp_msg.content.clone().unwrap_or_default();
                 log::info!("[Agent] LLM 无工具调用，返回文本 ({}字符)", reply.len());
                 self.messages.push(ChatMessage {
                     role: "assistant".to_string(),
@@ -558,6 +550,10 @@ ERROR_LOG：出现过的报错与解决方案
                     tool_call_id: None,
                     name: None,
                 });
+                // 轨迹录制：任务完成
+                if let Some(ref mut recorder) = self.recorder {
+                    recorder.finalize(true, Some(&reply));
+                }
                 return Ok(AgentResult {
                     reply,
                     tool_calls: all_tool_calls,
@@ -569,14 +565,14 @@ ERROR_LOG：出现过的报错与解决方案
             // 记录 assistant 消息（含 tool_calls）
             self.messages.push(ChatMessage {
                 role: "assistant".to_string(),
-                content: response.content.as_ref().map(|c| serde_json::Value::String(c.clone())),
+                content: resp_msg.content.as_ref().map(|c| serde_json::Value::String(c.clone())),
                 tool_calls: Some(
                     tool_calls
                         .iter()
                         .map(|tc| ToolCall {
                             id: tc.id.clone(),
-                            name: tc.function.name.clone(),
-                            arguments: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
+                            name: tc.name.clone(),
+                            arguments: serde_json::from_str(&tc.arguments).unwrap_or_default(),
                         })
                         .collect(),
                 ),
@@ -584,14 +580,15 @@ ERROR_LOG：出现过的报错与解决方案
                 name: None,
             });
 
-            // 执行所有工具调用
+            // 执行所有工具调用（三步流水线：检查 → 执行 → 记录）
             let mut should_stop = false;
             let mut final_summary = String::new();
 
+            // 第一步：前置检查，筛选可执行的工具
             for tc in &tool_calls {
-                let tool_name = &tc.function.name;
+                let tool_name = &tc.name;
                 let args: serde_json::Value =
-                    serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+                    serde_json::from_str(&tc.arguments).unwrap_or_default();
 
                 log::info!("[Agent] 执行工具: {} (参数: {})", tool_name, args);
 
@@ -632,9 +629,14 @@ ERROR_LOG：出现过的报错与解决方案
                     }
                 }
 
-                // 执行工具
+                // 第二步：执行工具
                 all_tool_calls.push(tool_name.clone());
                 let result = self.execute_tool(tool_name, args.clone()).await;
+
+                // 第三步：轨迹录制 + 进度更新
+                if let Some(ref mut recorder) = self.recorder {
+                    recorder.record_tool_call(self.iteration_count, tool_name, &args, &result);
+                }
 
                 // 检查是否为 task_complete
                 if tool_name == "task_complete" {
@@ -664,13 +666,6 @@ ERROR_LOG：出现过的报错与解决方案
                     }
                 }
 
-                // 每 3 轮记录进度
-                if all_tool_calls.len() % 3 == 0 {
-                    log::info!("[Agent] 进度快照: 已完成={}, 报错={}",
-                        self.progress.completed.len(),
-                        self.progress.error_log.len());
-                }
-
                 self.messages.push(ChatMessage {
                     role: "tool".to_string(),
                     content: Some(serde_json::Value::String(result.to_string())),
@@ -680,9 +675,20 @@ ERROR_LOG：出现过的报错与解决方案
                 });
             }
 
+            // 每 3 轮记录进度
+            if all_tool_calls.len() % 3 == 0 {
+                log::info!("[Agent] 进度快照: 已完成={}, 报错={}",
+                    self.progress.completed.len(),
+                    self.progress.error_log.len());
+            }
+
             if should_stop {
                 log::info!("[Agent] task_complete 触发，结束循环");
                 log::info!("[Agent] 总迭代: {}, 工具调用: {}", self.iteration_count, all_tool_calls.len());
+                // 轨迹录制：任务完成
+                if let Some(ref mut recorder) = self.recorder {
+                    recorder.finalize(true, Some(&final_summary));
+                }
                 return Ok(AgentResult {
                     reply: final_summary,
                     tool_calls: all_tool_calls,
@@ -695,103 +701,9 @@ ERROR_LOG：出现过的报错与解决方案
         }
     }
 
-    // ==================== DeepSeek API 调用 ====================
-
-    async fn call_deepseek(&self) -> Result<DeepSeekResponseMessage, String> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
-
-        let messages: Vec<serde_json::Value> = self
-            .messages
-            .iter()
-            .map(|m| {
-                let mut map = serde_json::Map::new();
-                map.insert("role".to_string(), serde_json::Value::String(m.role.clone()));
-                if let Some(ref content) = m.content {
-                    map.insert("content".to_string(), content.clone());
-                } else {
-                    map.insert(
-                        "content".to_string(),
-                        serde_json::Value::String(String::new()),
-                    );
-                }
-                if let Some(ref tool_calls) = m.tool_calls {
-                    let calls: Vec<serde_json::Value> = tool_calls
-                        .iter()
-                        .map(|tc| {
-                            serde_json::json!({
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default()
-                                }
-                            })
-                        })
-                        .collect();
-                    map.insert("tool_calls".to_string(), serde_json::Value::Array(calls));
-                }
-                if let Some(ref call_id) = m.tool_call_id {
-                    map.insert(
-                        "tool_call_id".to_string(),
-                        serde_json::Value::String(call_id.clone()),
-                    );
-                }
-                if let Some(ref name) = m.name {
-                    map.insert("name".to_string(), serde_json::Value::String(name.clone()));
-                }
-                serde_json::Value::Object(map)
-            })
-            .collect();
-
-        let request = DeepSeekRequest {
-            model: self.config.model.clone(),
-            messages,
-            tools: Self::tools_definition(),
-            tool_choice: "auto".to_string(),
-            temperature: 0.7,
-        };
-
-        log::info!("[Agent] 调用 DeepSeek API: model={}, messages={}",
-            self.config.model, self.messages.len());
-
-        let response = client
-            .post(format!("{}/chat/completions", self.config.deepseek_base_url))
-            .header("Authorization", format!("Bearer {}", self.config.deepseek_api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("API请求失败: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            log::error!("[Agent] API 错误 ({}): {}", status, body);
-            return Err(format!("API错误 ({}): {}", status, body));
-        }
-
-        let deepseek_resp: DeepSeekResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("解析API响应失败: {}", e))?;
-
-        let msg = deepseek_resp.choices[0].message.clone();
-        if let Some(ref content) = msg.content {
-            log::info!("[Agent] LLM 响应: {} 字符", content.len());
-        }
-        if let Some(ref tcs) = msg.tool_calls {
-            log::info!("[Agent] LLM 请求工具: {:?}", tcs.iter().map(|tc| &tc.function.name).collect::<Vec<_>>());
-        }
-
-        Ok(msg)
-    }
-
     // ==================== 工具执行 ====================
 
-    async fn execute_tool(&self, name: &str, args: serde_json::Value) -> serde_json::Value {
+    async fn execute_tool(&mut self, name: &str, args: serde_json::Value) -> serde_json::Value {
         match name {
             // ===== 5 个标准工具 =====
 
@@ -1241,6 +1153,88 @@ ERROR_LOG：出现过的报错与解决方案
                     Ok(result) => serde_json::json!({"success": true, "result": result}),
                     Err(e) => serde_json::json!({"success": false, "error": e}),
                 }
+            }
+
+            "sequentialthinking" => {
+                let thought = args.get("thought").and_then(|v| v.as_str()).unwrap_or("");
+                let thought_number = args.get("thought_number").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                let total_thoughts = args.get("total_thoughts").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                let next_thought_needed = args.get("next_thought_needed").and_then(|v| v.as_bool()).unwrap_or(true);
+                let is_revision = args.get("is_revision").and_then(|v| v.as_bool());
+                let revises_thought = args.get("revises_thought").and_then(|v| v.as_u64()).map(|v| v as u32);
+                let branch_from_thought = args.get("branch_from_thought").and_then(|v| v.as_u64()).map(|v| v as u32);
+                let branch_id = args.get("branch_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let needs_more_thoughts = args.get("needs_more_thoughts").and_then(|v| v.as_bool());
+
+                // 调整 total_thoughts（如果当前步数超过预估总数）
+                let total = if thought_number > total_thoughts { thought_number } else { total_thoughts };
+
+                let thought_data = ThoughtData {
+                    thought: thought.to_string(),
+                    thought_number,
+                    total_thoughts: total,
+                    next_thought_needed,
+                    is_revision,
+                    revises_thought,
+                    branch_from_thought,
+                    branch_id: branch_id.clone(),
+                    needs_more_thoughts,
+                };
+
+                // 记录到历史
+                self.thought_history.push(thought_data);
+
+                // 处理分支
+                if let (Some(branch_from), Some(ref bid)) = (branch_from_thought, branch_id.as_ref()) {
+                    let branch_entry = self.branches.entry(bid.to_string()).or_insert_with(Vec::new);
+                    branch_entry.push(ThoughtData {
+                        thought: format!("[分支源于思考 #{}] {}", branch_from, thought),
+                        thought_number,
+                        total_thoughts: total,
+                        next_thought_needed,
+                        is_revision,
+                        revises_thought,
+                        branch_from_thought,
+                        branch_id: Some(bid.to_string()),
+                        needs_more_thoughts,
+                    });
+                }
+
+                // 构建友好的状态文本
+                let mut status_lines = Vec::new();
+                status_lines.push(format!("> 思考 #{}/{}", thought_number, total));
+
+                if is_revision.unwrap_or(false) {
+                    status_lines.push(format!("> 修订：正在重新考虑思考 #{}", revises_thought.unwrap_or(0)));
+                }
+                if let Some(bid) = &branch_id {
+                    status_lines.push(format!("> 分支 ({}) 源于思考 #{}", bid, branch_from_thought.unwrap_or(0)));
+                }
+
+                let summary = if thought.len() > 200 {
+                    format!("{}...", &thought[..200])
+                } else {
+                    thought.to_string()
+                };
+                let prefix = if is_revision.unwrap_or(false) { "🔄 修订" } else if branch_from_thought.is_some() { "🌿 分支" } else { "💭 思考" };
+                status_lines.push(format!("{}: {}", prefix, summary));
+                status_lines.push(format!("> 历史记录: {} 步, 分支: {}", self.thought_history.len(), self.branches.len()));
+                if !next_thought_needed {
+                    status_lines.push("> ✓ 思考完成，准备进入执行阶段".to_string());
+                }
+
+                log::info!("[Agent:sequentialthinking] 步骤 #{}/{}", thought_number, total);
+                log::info!("[Agent:sequentialthinking] 内容: {}", summary);
+
+                serde_json::json!({
+                    "status": "thinking_step_completed",
+                    "thought_number": thought_number,
+                    "total_thoughts": total,
+                    "next_thought_needed": next_thought_needed,
+                    "branch_count": self.branches.len(),
+                    "thought_history_length": self.thought_history.len(),
+                    "display": status_lines.join("\n")
+                })
             }
 
             _ => serde_json::json!({"error": format!("未知工具: {}", name)}),

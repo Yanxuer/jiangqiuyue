@@ -28,7 +28,7 @@ pub fn get_guide() -> Vec<GuideSection> {
 - **CLI 工具**：每个软件对应一个 CLI 工具包，提供该软件的命令行操作接口
 - **注册表**：所有可用 CLI 工具的目录，分为 Harness（社区构建）和 Public（官方 CLI）
 - **安装状态**：跟踪哪些 CLI 已安装在你的电脑上
-- **AI 代理**：DeepSeek 可以自动搜索、推荐、安装和执行 CLI 工具"#.to_string(),
+- **AI 代理**：可以自动搜索、推荐、安装和执行 CLI 工具"#.to_string(),
         },
         GuideSection {
             title: "如何使用 CLI 工具？".to_string(),

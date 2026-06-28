@@ -19,9 +19,11 @@ use backend_core::{
     config::Config,
     doc_reader::{self, DocReader},
     file_tools::FileTools,
+    llm::provider::LLMProvider,
     memory::{AgentMemory, MemoryMode, MemoryStatus},
     screen,
     software_scanner,
+    trajectory::recorder::TrajectoryRecorder,
 };
 
 #[derive(Clone)]
@@ -73,17 +75,19 @@ struct PendingCommandInfo {
 
 #[derive(Debug, Deserialize)]
 struct ConfigUpdateRequest {
-    deepseek_api_key: Option<String>,
-    deepseek_base_url: Option<String>,
+    api_key: Option<String>,
+    base_url: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct ConfigResponse {
     configured: bool,
-    deepseek_base_url: String,
+    base_url: String,
     model: String,
     has_api_key: bool,
+    provider: String,
 }
 
 #[tokio::main]
@@ -155,11 +159,28 @@ async fn main() -> anyhow::Result<()> {
     let cli_hub = CliHub::new(&cli_anything_root);
     log::info!("[CLI-Hub] 初始化完成，注册表路径: {}", cli_anything_root);
 
+    // 创建 LLMProvider（根据配置选择提供商）
+    let provider = LLMProvider::from_config(&config.llm.to_provider_config());
+
+    // 创建轨迹录制器
+    let recorder = match TrajectoryRecorder::new("./trajectories") {
+        Ok(r) => {
+            log::info!("[Trajectory] 轨迹录制已启用");
+            Some(r)
+        }
+        Err(e) => {
+            log::warn!("[Trajectory] 轨迹录制不可用: {}", e);
+            None
+        }
+    };
+
     let agent = Arc::new(Mutex::new(Agent::new(
         config.clone(),
         file_tools,
         memory,
         cli_hub,
+        provider,
+        recorder,
     )));
 
     let (tx, _rx) = broadcast::channel::<String>(100);
@@ -249,9 +270,10 @@ async fn config_get_handler(
     let cfg = agent.get_config();
     Json(ConfigResponse {
         configured: cfg.is_configured(),
-        deepseek_base_url: cfg.deepseek_base_url.clone(),
-        model: cfg.model.clone(),
-        has_api_key: !cfg.deepseek_api_key.is_empty(),
+        base_url: cfg.llm.base_url.clone(),
+        model: cfg.llm.model.clone(),
+        has_api_key: !cfg.llm.api_key.is_empty(),
+        provider: cfg.llm.provider.clone(),
     })
 }
 
@@ -262,28 +284,36 @@ async fn config_update_handler(
     let mut agent = state.agent.lock().await;
     let mut new_config = agent.get_config().clone();
 
-    if let Some(key) = &req.deepseek_api_key {
+    if let Some(key) = &req.api_key {
         if !key.is_empty() {
-            new_config.deepseek_api_key = key.clone();
+            new_config.llm.api_key = key.clone();
         }
     }
-    if let Some(url) = &req.deepseek_base_url {
+    if let Some(url) = &req.base_url {
         if !url.is_empty() {
-            new_config.deepseek_base_url = url.clone();
+            new_config.llm.base_url = url.clone();
         }
     }
     if let Some(model) = &req.model {
         if !model.is_empty() {
-            new_config.model = model.clone();
+            new_config.llm.model = model.clone();
+        }
+    }
+    if let Some(provider) = &req.provider {
+        if !provider.is_empty() {
+            new_config.llm.provider = provider.clone();
         }
     }
 
     new_config.save_to_file(&state.config.memory_path);
-    agent.update_config(new_config);
+
+    // 重新创建 provider，应用新配置
+    let new_provider = LLMProvider::from_config(&new_config.llm.to_provider_config());
+    agent.update_config(new_config, new_provider);
 
     Json(serde_json::json!({
         "success": true,
-        "configured": !agent.get_config().deepseek_api_key.is_empty()
+        "configured": !agent.get_config().llm.api_key.is_empty()
     }))
 }
 

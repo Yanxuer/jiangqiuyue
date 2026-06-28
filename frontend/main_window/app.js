@@ -8,8 +8,9 @@ let reconnectTimer = null;
 let backendReady = false;
 let connectingActive = false;
 
-let currentModel = 'deepseek-v4-flash';
-let currentBaseUrl = 'https://api.deepseek.com';
+// 默认值在 checkBackendConfig() 中被后端返回覆盖
+let currentModel = '';
+let currentBaseUrl = '';
 let currentApiKey = '';
 
 const dialogMessages = document.getElementById('dialogMessages');
@@ -1496,7 +1497,7 @@ async function checkBackendConfig() {
         const data = await res.json();
         appLog('后端配置状态:', JSON.stringify(data));
 
-        currentBaseUrl = data.deepseek_base_url;
+        currentBaseUrl = data.base_url;
         currentModel = data.model;
         populateModelSelector(data.model);
 
@@ -1584,8 +1585,8 @@ async function saveConfigToBackend(apiKey, baseUrl, model) {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                deepseek_api_key: apiKey || null,
-                deepseek_base_url: baseUrl || null,
+                api_key: apiKey || null,
+                base_url: baseUrl || null,
                 model: model || null
             })
         });

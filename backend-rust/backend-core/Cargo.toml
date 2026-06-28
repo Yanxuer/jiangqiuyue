@@ -50,3 +50,6 @@ walkdir = "2"
 
 # Regex
 regex = "1"
+
+# Random number generation (for API retry backoff)
+rand = "0.8"

@@ -119,17 +119,24 @@ if ($portInUse) {
     Write-Pass "端口 $Port 空闲"
 }
 
-# 0.5 API Key 检查
-Write-Step "DeepSeek API 配置检查"
-$apiKey = $env:DEEPSEEK_API_KEY
-$baseUrl = $env:DEEPSEEK_BASE_URL
-$model = $env:MODEL
+# 0.5 LLM API 配置检查
+Write-Step "LLM API 配置检查"
+$apiKey = $env:LLM_API_KEY
+if (-not $apiKey) { $apiKey = $env:DEEPSEEK_API_KEY }
+$provider = $env:LLM_PROVIDER
+if (-not $provider) { $provider = "deepseek" }
+$baseUrl = $env:LLM_BASE_URL
+if (-not $baseUrl) { $baseUrl = $env:DEEPSEEK_BASE_URL }
+$model = $env:LLM_MODEL
+if (-not $model) { $model = $env:MODEL }
 if ($apiKey) {
-    Write-Pass "DEEPSEEK_API_KEY: 已设置 (${apiKey}..."
-    Write-KeyVal "  DEEPSEEK_BASE_URL" "$baseUrl"
-    Write-KeyVal "  MODEL" "$model"
+    $maskedKey = $apiKey.Substring(0, [Math]::Min(12, $apiKey.Length)) + "..."
+    Write-Pass "LLM_API_KEY: 已设置 (${maskedKey})"
+    Write-KeyVal "  LLM_PROVIDER" "$provider"
+    Write-KeyVal "  LLM_BASE_URL" "$baseUrl"
+    Write-KeyVal "  LLM_MODEL" "$model"
 } else {
-    Write-Warn "DEEPSEEK_API_KEY 未设置"
+    Write-Warn "LLM_API_KEY 或 DEEPSEEK_API_KEY 未设置"
     Write-Info "Agent 将使用运行时配置，请在启动后通过 /config API 设置"
 }
 
