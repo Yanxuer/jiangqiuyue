@@ -12,6 +12,25 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use std::future::Future;
+use std::pin::Pin;
+
+// ==================== 数据结构 ====================
+
+/// 工具执行上下文 — 封装所有共享资源，使工具函数无需 &mut Agent
+pub struct ToolContext {
+    pub file_tools: Arc<FileTools>,
+    pub memory: Arc<Mutex<AgentMemory>>,
+    pub cli_hub: Arc<Mutex<CliHub>>,
+    pub config: Config,
+}
+
+/// 顺序思维状态变更，从 execute_tool 返回后合并到 Agent
+pub struct SequentialThinkingChange {
+    pub data: ThoughtData,
+    pub branch: Option<(String, ThoughtData)>,
+    pub display: String,
+}
 
 // ==================== 数据结构 ====================
 
@@ -447,7 +466,7 @@ ERROR_LOG：出现过的报错与解决方案
 
         // 轨迹录制：任务开始
         if let Some(ref mut recorder) = self.recorder {
-            recorder.start(user_input, self.provider.name(), self.provider.model());
+            recorder.start(user_input, self.provider.name(), self.provider.model()).await;
         }
 
         // 构建用户消息
@@ -534,7 +553,7 @@ ERROR_LOG：出现过的报错与解决方案
                     resp_msg.tool_calls.as_deref(),
                     llm_response.usage.as_ref(),
                     None,
-                );
+                ).await;
             }
 
             let tool_calls = resp_msg.tool_calls.clone().unwrap_or_default();
@@ -552,7 +571,7 @@ ERROR_LOG：出现过的报错与解决方案
                 });
                 // 轨迹录制：任务完成
                 if let Some(ref mut recorder) = self.recorder {
-                    recorder.finalize(true, Some(&reply));
+                    recorder.finalize(true, Some(&reply)).await;
                 }
                 return Ok(AgentResult {
                     reply,
@@ -580,19 +599,24 @@ ERROR_LOG：出现过的报错与解决方案
                 name: None,
             });
 
-            // 执行所有工具调用（三步流水线：检查 → 执行 → 记录）
+            // ====== 三步流水线（并行化版）：检查 → 并行执行 → 顺序记录 ======
             let mut should_stop = false;
             let mut final_summary = String::new();
 
-            // 第一步：前置检查，筛选可执行的工具
+            // Step 1: 前置检查 & 筛选（串行，修改共享计数器）
+            struct FilteredTool {
+                id: String,
+                name: String,
+                args: serde_json::Value,
+            }
+            let mut filtered: Vec<FilteredTool> = Vec::new();
             for tc in &tool_calls {
-                let tool_name = &tc.name;
+                let tool_name = tc.name.clone();
                 let args: serde_json::Value =
                     serde_json::from_str(&tc.arguments).unwrap_or_default();
 
-                log::info!("[Agent] 执行工具: {} (参数: {})", tool_name, args);
+                log::info!("[Agent] 检查工具: {} (参数: {})", tool_name, args);
 
-                // 前置检查
                 if tool_name == "web_search" {
                     self.web_search_count += 1;
                     if self.web_search_count > MAX_WEB_SEARCHES {
@@ -629,17 +653,73 @@ ERROR_LOG：出现过的报错与解决方案
                     }
                 }
 
-                // 第二步：执行工具
-                all_tool_calls.push(tool_name.clone());
-                let result = self.execute_tool(tool_name, args.clone()).await;
+                filtered.push(FilteredTool { id: tc.id.clone(), name: tool_name, args });
+            }
 
-                // 第三步：轨迹录制 + 进度更新
+            // Step 2: 并行执行所有通过检查的工具
+            let tp_for_st = self.progress.clone();
+            let iter_for_st = self.iteration_count;
+
+            let mut handles: Vec<(usize, String, Pin<Box<dyn Future<Output = (serde_json::Value, Option<SequentialThinkingChange>)> + Send>>)> = Vec::new();
+            for (idx, ft) in filtered.iter().enumerate() {
+                let name = ft.name.clone();
+                let args = ft.args.clone();
+                let ctx = ToolContext {
+                    file_tools: self.file_tools.clone(),
+                    memory: self.memory.clone(),
+                    cli_hub: self.cli_hub.clone(),
+                    config: self.config.clone(),
+                };
+                let tp = tp_for_st.clone();
+                let iter = iter_for_st;
+                handles.push((idx, ft.id.clone(), Box::pin(async move {
+                    let mut st = None;
+                    let value = execute_tool_parallel(&ctx, &name, args, &tp, iter, &mut st).await;
+                    (value, st)
+                })));
+            }
+
+            // 并行等待所有结果
+            let mut results: Vec<(usize, String, serde_json::Value, Option<SequentialThinkingChange>)> = Vec::new();
+            for (idx, id, fut) in handles {
+                let (value, st_change) = fut.await;
+                results.push((idx, id, value, st_change));
+            }
+            // 恢复原始顺序（按 filtered 数组顺序）
+            results.sort_by_key(|(idx, _, _, _)| *idx);
+
+            // Step 3: 顺序记录（轨迹 + 进度 + messages，保持确定性顺序）
+            for (_, tool_call_id, result, st_change) in &results {
+                let tool_name_for_log = filtered.iter()
+                    .find(|ft| &ft.id == tool_call_id)
+                    .map(|ft| ft.name.as_str())
+                    .unwrap_or("unknown");
+
+                all_tool_calls.push(tool_name_for_log.to_string());
+
+                // 轨迹录制
                 if let Some(ref mut recorder) = self.recorder {
-                    recorder.record_tool_call(self.iteration_count, tool_name, &args, &result);
+                    recorder.record_tool_call(
+                        self.iteration_count,
+                        tool_name_for_log,
+                        &serde_json::Value::Null, // args 在 Step 1 中已提取
+                        result,
+                    ).await;
                 }
 
-                // 检查是否为 task_complete
-                if tool_name == "task_complete" {
+                // 顺序思维状态合并
+                if tool_name_for_log == "sequentialthinking" {
+                    if let Some(ref change) = st_change {
+                        self.thought_history.push(change.data.clone());
+                        if let Some((bid, bdata)) = &change.branch {
+                            let entry = self.branches.entry(bid.clone()).or_insert_with(Vec::new);
+                            entry.push(bdata.clone());
+                        }
+                    }
+                }
+
+                // 检查 task_complete
+                if tool_name_for_log == "task_complete" {
                     should_stop = true;
                     final_summary = result
                         .get("summary")
@@ -649,11 +729,12 @@ ERROR_LOG：出现过的报错与解决方案
                 }
 
                 // 更新进度
-                self.progress.completed.push(format!("{}: {}", tool_name,
-                    if tool_name == "bash_exec" {
-                        args.get("command").and_then(|v| v.as_str()).unwrap_or("?").to_string()
-                    } else if tool_name == "view_file" {
-                        args.get("path").and_then(|v| v.as_str()).unwrap_or("?").to_string()
+                self.progress.completed.push(format!("{}: {}",
+                    tool_name_for_log,
+                    if tool_name_for_log == "bash_exec" {
+                        "shell_command".to_string()
+                    } else if tool_name_for_log == "view_file" {
+                        "file_view".to_string()
                     } else {
                         String::new()
                     }
@@ -662,7 +743,7 @@ ERROR_LOG：出现过的报错与解决方案
                 // 记录错误
                 if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
                     if !err.is_empty() {
-                        self.progress.error_log.push(format!("[{}] {}", tool_name, err));
+                        self.progress.error_log.push(format!("[{}] {}", tool_name_for_log, err));
                     }
                 }
 
@@ -670,8 +751,8 @@ ERROR_LOG：出现过的报错与解决方案
                     role: "tool".to_string(),
                     content: Some(serde_json::Value::String(result.to_string())),
                     tool_calls: None,
-                    tool_call_id: Some(tc.id.clone()),
-                    name: Some(tool_name.clone()),
+                    tool_call_id: Some(tool_call_id.clone()),
+                    name: Some(tool_name_for_log.to_string()),
                 });
             }
 
@@ -687,7 +768,7 @@ ERROR_LOG：出现过的报错与解决方案
                 log::info!("[Agent] 总迭代: {}, 工具调用: {}", self.iteration_count, all_tool_calls.len());
                 // 轨迹录制：任务完成
                 if let Some(ref mut recorder) = self.recorder {
-                    recorder.finalize(true, Some(&final_summary));
+                    recorder.finalize(true, Some(&final_summary)).await;
                 }
                 return Ok(AgentResult {
                     reply: final_summary,
@@ -700,11 +781,21 @@ ERROR_LOG：出现过的报错与解决方案
             log::info!("[Agent] 迭代 #{} 完成, 继续下一轮...", self.iteration_count);
         }
     }
+}
 
-    // ==================== 工具执行 ====================
+// ==================== 工具执行（并行安全版） ====================
 
-    async fn execute_tool(&mut self, name: &str, args: serde_json::Value) -> serde_json::Value {
-        match name {
+/// 工具执行入口 — 不持有 &mut Agent，可安全并行调用。
+/// sequentialthinking 的 ThoughtData 通过 st_change 输出参数返回
+async fn execute_tool_parallel(
+    ctx: &ToolContext,
+    name: &str,
+    args: serde_json::Value,
+    progress: &TaskProgress,
+    iteration_count: u32,
+    st_change: &mut Option<SequentialThinkingChange>,
+) -> serde_json::Value {
+    match name {
             // ===== 5 个标准工具 =====
 
             "view_file" => {
@@ -1005,8 +1096,8 @@ ERROR_LOG：出现过的报错与解决方案
             "web_search" => {
                 let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
 
-                log::info!("[Agent:web_search] query={}, count={}/{}",
-                    query, self.web_search_count, MAX_WEB_SEARCHES);
+                log::info!("[Agent:web_search] query={}",
+                    query);
 
                 // 使用 reqwest 调用 DuckDuckGo Instant Answer API（免费，无需 key）
                 let url = format!(
@@ -1058,15 +1149,15 @@ ERROR_LOG：出现过的报错与解决方案
 
                 log::info!("[Agent:task_complete] 任务结束, 总结: {} 字符", summary.len());
                 log::info!("[Agent:task_complete] 总迭代: {}, 工具调用: {}",
-                    self.iteration_count, self.progress.completed.len());
+                    iteration_count, progress.completed.len());
 
                 serde_json::json!({
                     "status": "completed",
                     "summary": summary,
-                    "iterations": self.iteration_count,
+                    "iterations": iteration_count,
                     "progress": {
-                        "completed": self.progress.completed,
-                        "error_log": self.progress.error_log
+                        "completed": progress.completed,
+                        "error_log": progress.error_log
                     }
                 })
             }
@@ -1087,8 +1178,8 @@ ERROR_LOG：出现过的报错与解决方案
 
             "search_memory" => {
                 let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                let mut memory = self.memory.lock().await;
-                match memory.search(query, 5) {
+                let mut memory = ctx.memory.lock().await;
+                match memory.search(query, 5).await {
                     Ok(memories) => serde_json::json!({"memories": memories}),
                     Err(e) => serde_json::json!({"error": e.to_string()}),
                 }
@@ -1096,8 +1187,8 @@ ERROR_LOG：出现过的报错与解决方案
 
             "add_memory" => {
                 let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let mut memory = self.memory.lock().await;
-                match memory.add(content, "chat") {
+                let mut memory = ctx.memory.lock().await;
+                match memory.add(content, "chat").await {
                     Ok(id) => serde_json::json!({"memory_id": id}),
                     Err(e) => serde_json::json!({"error": e.to_string()}),
                 }
@@ -1105,7 +1196,7 @@ ERROR_LOG：出现过的报错与解决方案
 
             "find_software" => {
                 let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                let memory_path = &self.config.memory_path;
+                let memory_path = &ctx.config.memory_path;
                 if !crate::software_scanner::is_software_scanned(memory_path) {
                     return serde_json::json!({"status": "scanning", "message": "正在扫描电脑上的软件，请稍后重试~"});
                 }
@@ -1140,7 +1231,7 @@ ERROR_LOG：出现过的报错与解决方案
 
             // CLI-Anything 工具
             "list_clis" | "search_clis" | "get_cli_info" | "recommend_clis" => {
-                let hub = self.cli_hub.lock().await;
+                let hub = ctx.cli_hub.lock().await;
                 match cli_tools::execute_cli_tool(&hub, name, &args).await {
                     Ok(result) => serde_json::json!({"success": true, "result": result}),
                     Err(e) => serde_json::json!({"success": false, "error": e}),
@@ -1148,7 +1239,7 @@ ERROR_LOG：出现过的报错与解决方案
             }
 
             "install_cli" | "execute_cli" => {
-                let mut hub = self.cli_hub.lock().await;
+                let mut hub = ctx.cli_hub.lock().await;
                 match cli_tools::execute_cli_tool_mut(&mut hub, name, &args).await {
                     Ok(result) => serde_json::json!({"success": true, "result": result}),
                     Err(e) => serde_json::json!({"success": false, "error": e}),
@@ -1166,7 +1257,6 @@ ERROR_LOG：出现过的报错与解决方案
                 let branch_id = args.get("branch_id").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let needs_more_thoughts = args.get("needs_more_thoughts").and_then(|v| v.as_bool());
 
-                // 调整 total_thoughts（如果当前步数超过预估总数）
                 let total = if thought_number > total_thoughts { thought_number } else { total_thoughts };
 
                 let thought_data = ThoughtData {
@@ -1181,13 +1271,9 @@ ERROR_LOG：出现过的报错与解决方案
                     needs_more_thoughts,
                 };
 
-                // 记录到历史
-                self.thought_history.push(thought_data);
-
-                // 处理分支
-                if let (Some(branch_from), Some(ref bid)) = (branch_from_thought, branch_id.as_ref()) {
-                    let branch_entry = self.branches.entry(bid.to_string()).or_insert_with(Vec::new);
-                    branch_entry.push(ThoughtData {
+                // 构建分支数据（将在调用方合并到 Agent.branches）
+                let branch = if let (Some(branch_from), Some(ref bid)) = (branch_from_thought, branch_id.as_ref()) {
+                    Some((bid.to_string(), ThoughtData {
                         thought: format!("[分支源于思考 #{}] {}", branch_from, thought),
                         thought_number,
                         total_thoughts: total,
@@ -1197,20 +1283,20 @@ ERROR_LOG：出现过的报错与解决方案
                         branch_from_thought,
                         branch_id: Some(bid.to_string()),
                         needs_more_thoughts,
-                    });
-                }
+                    }))
+                } else {
+                    None
+                };
 
                 // 构建友好的状态文本
                 let mut status_lines = Vec::new();
                 status_lines.push(format!("> 思考 #{}/{}", thought_number, total));
-
                 if is_revision.unwrap_or(false) {
                     status_lines.push(format!("> 修订：正在重新考虑思考 #{}", revises_thought.unwrap_or(0)));
                 }
                 if let Some(bid) = &branch_id {
                     status_lines.push(format!("> 分支 ({}) 源于思考 #{}", bid, branch_from_thought.unwrap_or(0)));
                 }
-
                 let summary = if thought.len() > 200 {
                     format!("{}...", &thought[..200])
                 } else {
@@ -1218,7 +1304,6 @@ ERROR_LOG：出现过的报错与解决方案
                 };
                 let prefix = if is_revision.unwrap_or(false) { "🔄 修订" } else if branch_from_thought.is_some() { "🌿 分支" } else { "💭 思考" };
                 status_lines.push(format!("{}: {}", prefix, summary));
-                status_lines.push(format!("> 历史记录: {} 步, 分支: {}", self.thought_history.len(), self.branches.len()));
                 if !next_thought_needed {
                     status_lines.push("> ✓ 思考完成，准备进入执行阶段".to_string());
                 }
@@ -1226,21 +1311,25 @@ ERROR_LOG：出现过的报错与解决方案
                 log::info!("[Agent:sequentialthinking] 步骤 #{}/{}", thought_number, total);
                 log::info!("[Agent:sequentialthinking] 内容: {}", summary);
 
-                serde_json::json!({
+                let json_result = serde_json::json!({
                     "status": "thinking_step_completed",
                     "thought_number": thought_number,
                     "total_thoughts": total,
                     "next_thought_needed": next_thought_needed,
-                    "branch_count": self.branches.len(),
-                    "thought_history_length": self.thought_history.len(),
                     "display": status_lines.join("\n")
-                })
+                });
+
+                *st_change = Some(SequentialThinkingChange {
+                    data: thought_data,
+                    branch,
+                    display: status_lines.join("\n"),
+                });
+                return json_result;
             }
 
             _ => serde_json::json!({"error": format!("未知工具: {}", name)}),
         }
     }
-}
 
 // ==================== 辅助函数 ====================
 

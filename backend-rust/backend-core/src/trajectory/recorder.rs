@@ -2,6 +2,8 @@ use crate::llm::types::{LLMMessage, LLMToolCall, LLMUsage};
 use chrono::Local;
 use serde::Serialize;
 use std::path::PathBuf;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 
 // ==================== 轨迹录制器 ====================
 
@@ -27,9 +29,9 @@ impl TrajectoryRecorder {
     /// # 参数
     ///
     /// * `trajectory_dir` — 轨迹文件存放目录
-    pub fn new(trajectory_dir: &str) -> Result<Self, String> {
+    pub async fn new(trajectory_dir: &str) -> Result<Self, String> {
         let dir = PathBuf::from(trajectory_dir);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("创建轨迹目录失败: {}", e))?;
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| format!("创建轨迹目录失败: {}", e))?;
 
         let session_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
@@ -50,7 +52,7 @@ impl TrajectoryRecorder {
     }
 
     /// 任务开始
-    pub fn start(&mut self, task: &str, provider: &str, model: &str) {
+    pub async fn start(&mut self, task: &str, provider: &str, model: &str) {
         self.task = task.to_string();
         self.provider = provider.to_string();
         self.model = model.to_string();
@@ -62,11 +64,11 @@ impl TrajectoryRecorder {
             task: task.to_string(),
             provider: provider.to_string(),
             model: model.to_string(),
-        });
+        }).await;
     }
 
     /// 记录 LLM 调用
-    pub fn record_llm_call(
+    pub async fn record_llm_call(
         &mut self,
         iteration: u32,
         messages: &[LLMMessage],
@@ -130,11 +132,11 @@ impl TrajectoryRecorder {
             model: self.model.clone(),
             input_messages,
             response,
-        });
+        }).await;
     }
 
     /// 记录工具调用
-    pub fn record_tool_call(
+    pub async fn record_tool_call(
         &mut self,
         iteration: u32,
         tool_name: &str,
@@ -154,11 +156,11 @@ impl TrajectoryRecorder {
             tool_name: tool_name.to_string(),
             arguments: args.clone(),
             result: result_str,
-        });
+        }).await;
     }
 
     /// 任务结束
-    pub fn finalize(&mut self, success: bool, summary: Option<&str>) {
+    pub async fn finalize(&mut self, success: bool, summary: Option<&str>) {
         let end_time = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
         self.write_record(&TrajectoryEvent::SessionEnd {
             session_id: self.session_id.clone(),
@@ -167,7 +169,7 @@ impl TrajectoryRecorder {
             success,
             summary: summary.map(|s| s.to_string()),
             total_records: self.record_count,
-        });
+        }).await;
         log::info!(
             "[Trajectory] 录制完成: {} ({}) 条记录",
             self.file_path.display(),
@@ -181,7 +183,7 @@ impl TrajectoryRecorder {
     }
 
     /// 写入一条 JSON 记录
-    fn write_record(&mut self, event: &TrajectoryEvent) {
+    async fn write_record(&mut self, event: &TrajectoryEvent) {
         let json = match serde_json::to_string(event) {
             Ok(j) => j,
             Err(e) => {
@@ -190,14 +192,14 @@ impl TrajectoryRecorder {
             }
         };
 
-        match std::fs::OpenOptions::new()
+        match OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.file_path)
+            .await
         {
             Ok(mut file) => {
-                use std::io::Write;
-                if let Err(e) = writeln!(file, "{}", json) {
+                if let Err(e) = file.write_all(format!("{}\n", json).as_bytes()).await {
                     log::error!("[Trajectory] 写入失败: {}", e);
                 } else {
                     self.record_count += 1;

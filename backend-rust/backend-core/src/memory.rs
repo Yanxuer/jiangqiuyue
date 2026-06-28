@@ -3,6 +3,7 @@ use fastembed::{Embedding, TextEmbedding, UserDefinedEmbeddingModel, TokenizerFi
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tokio::task::spawn_blocking;
 use std::fs;
 use chrono::Utc;
 use uuid::Uuid;
@@ -257,14 +258,23 @@ impl AgentMemory {
         self.embedder.is_some()
     }
 
-    pub fn add(&mut self, content: &str, category: &str) -> Result<String> {
+    pub async fn add(&mut self, content: &str, category: &str) -> Result<String> {
         let id = Uuid::new_v4().to_string();
         let time = Utc::now().to_rfc3339();
 
-        if let Some(ref embedder) = self.embedder {
-            let embeddings = embedder
-                .embed(vec![content], None)
-                .context("生成嵌入向量失败")?;
+        if self.embedder.is_some() {
+            let embedder = self.embedder.take().unwrap();
+            let content_owned = content.to_string();
+            let result = spawn_blocking(move || {
+                let embeddings = embedder.embed(vec![content_owned.as_str()], None)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                Ok::<(Vec<fastembed::Embedding>, TextEmbedding), anyhow::Error>((embeddings, embedder))
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("spawn_blocking 失败: {}", e))?
+            .context("生成嵌入向量失败")?;
+            let (embeddings, embedder) = result;
+            self.embedder = Some(embedder);
 
             let embedding_bytes = self.serialize_embedding(&embeddings[0]);
 
@@ -288,11 +298,20 @@ impl AgentMemory {
         Ok(id)
     }
 
-    pub fn search(&mut self, query: &str, n_results: usize) -> Result<Vec<MemoryItem>> {
-        let query_embedding = if let Some(ref embedder) = self.embedder {
-            let embeddings = embedder
-                .embed(vec![query], None)
-                .context("生成查询嵌入向量失败")?;
+    pub async fn search(&mut self, query: &str, n_results: usize) -> Result<Vec<MemoryItem>> {
+        let query_embedding = if self.embedder.is_some() {
+            let embedder = self.embedder.take().unwrap();
+            let query_owned = query.to_string();
+            let result = spawn_blocking(move || {
+                let embeddings = embedder.embed(vec![query_owned.as_str()], None)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                Ok::<(Vec<fastembed::Embedding>, TextEmbedding), anyhow::Error>((embeddings, embedder))
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("spawn_blocking 失败: {}", e))?
+            .context("生成查询嵌入向量失败")?;
+            let (embeddings, embedder) = result;
+            self.embedder = Some(embedder);
             self.add_vector_log("INFO", format!("向量搜索: \"{}\" (top {})", &query[..query.len().min(30)], n_results));
             Some(embeddings[0].clone())
         } else {

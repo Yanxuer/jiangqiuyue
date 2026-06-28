@@ -163,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
     let provider = LLMProvider::from_config(&config.llm.to_provider_config());
 
     // 创建轨迹录制器
-    let recorder = match TrajectoryRecorder::new("./trajectories") {
+    let recorder = match TrajectoryRecorder::new("./trajectories").await {
         Ok(r) => {
             log::info!("[Trajectory] 轨迹录制已启用");
             Some(r)
@@ -376,7 +376,7 @@ async fn memory_search_handler(
 ) -> Json<serde_json::Value> {
     let agent = state.agent.lock().await;
     let mut memory = agent.memory().lock().await;
-    match memory.search(&req.query, 5) {
+    match memory.search(&req.query, 5).await {
         Ok(results) => Json(serde_json::json!({"results": results})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
@@ -388,7 +388,7 @@ async fn memory_add_handler(
 ) -> Json<serde_json::Value> {
     let agent = state.agent.lock().await;
     let mut memory = agent.memory().lock().await;
-    match memory.add(&req.content, "chat") {
+    match memory.add(&req.content, "chat").await {
         Ok(id) => Json(serde_json::json!({"id": id})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }

@@ -59,20 +59,17 @@ impl ProviderKind {
 
 /// 使用 enum 而非 trait object，避免 Box 分配和 async-trait 依赖
 pub enum LLMProvider {
-    DeepSeek(DeepSeekClient),
-    OpenAI(OpenAIClient),
+    DeepSeek(OpenAICompatClient),
+    OpenAI(OpenAICompatClient),
 }
 
 impl LLMProvider {
     /// 根据配置创建对应的 provider
     pub fn from_config(config: &ProviderConfig) -> Self {
+        let client = OpenAICompatClient::new(config, config.kind.api_name());
         match config.kind {
-            ProviderKind::DeepSeek => {
-                LLMProvider::DeepSeek(DeepSeekClient::new(config))
-            }
-            ProviderKind::OpenAI => {
-                LLMProvider::OpenAI(OpenAIClient::new(config))
-            }
+            ProviderKind::DeepSeek => LLMProvider::DeepSeek(client),
+            ProviderKind::OpenAI => LLMProvider::OpenAI(client),
         }
     }
 
@@ -82,29 +79,20 @@ impl LLMProvider {
         messages: &[LLMMessage],
         tools: Option<&[ToolDefinition]>,
     ) -> Result<LLMResponse, String> {
-        match self {
-            LLMProvider::DeepSeek(client) => {
-                retry::retry_with_backoff("DeepSeek", client.config.max_retries, || {
-                    let messages = messages.to_vec();
-                    let tools = tools.map(|t| t.to_vec());
-                    let client = client.clone();
-                    async move { client.chat_inner(&messages, tools.as_deref()).await }
-                })
-                .await
-            }
-            LLMProvider::OpenAI(client) => {
-                retry::retry_with_backoff("OpenAI", client.config.max_retries, || {
-                    let messages = messages.to_vec();
-                    let tools = tools.map(|t| t.to_vec());
-                    let client = client.clone();
-                    async move { client.chat_inner(&messages, tools.as_deref()).await }
-                })
-                .await
-            }
-        }
+        let (client, api_name) = match self {
+            LLMProvider::DeepSeek(c) => (c, "DeepSeek"),
+            LLMProvider::OpenAI(c) => (c, "OpenAI"),
+        };
+        retry::retry_with_backoff(api_name, client.config.max_retries, || {
+            let messages = messages.to_vec();
+            let tools = tools.map(|t| t.to_vec());
+            let client = client.clone();
+            async move { client.chat_inner(&messages, tools.as_deref()).await }
+        })
+        .await
     }
 
-    /// 返回提供商名称（用于日志/轨迹录制）
+    /// 返回提供商名称
     pub fn name(&self) -> &str {
         match self {
             LLMProvider::DeepSeek(_) => "DeepSeek",
@@ -121,16 +109,20 @@ impl LLMProvider {
     }
 }
 
-// ==================== DeepSeek 客户端 ====================
+// ==================== OpenAI 兼容客户端（DeepSeek 和 OpenAI 共用） ====================
 
 #[derive(Clone)]
-pub struct DeepSeekClient {
+pub struct OpenAICompatClient {
     config: ProviderConfig,
+    log_prefix: String,
 }
 
-impl DeepSeekClient {
-    pub fn new(config: &ProviderConfig) -> Self {
-        Self { config: config.clone() }
+impl OpenAICompatClient {
+    pub fn new(config: &ProviderConfig, log_prefix: &str) -> Self {
+        Self {
+            config: config.clone(),
+            log_prefix: log_prefix.to_string(),
+        }
     }
 
     /// 核心调用（不包含重试）
@@ -206,7 +198,7 @@ impl DeepSeekClient {
             "temperature": self.config.temperature,
         });
 
-        log::info!("[DeepSeek] 调用 API: model={}, messages={}", self.config.model, messages.len());
+        log::info!("[{}] 调用 API: model={}, messages={}", self.log_prefix, self.config.model, messages.len());
 
         let response = client
             .post(format!("{}/chat/completions", self.config.base_url))
@@ -264,11 +256,12 @@ impl DeepSeekClient {
         let msg = &resp.choices[0].message;
 
         if let Some(ref content) = msg.content {
-            log::info!("[DeepSeek] 响应: {} 字符", content.len());
+            log::info!("[{}] 响应: {} 字符", self.log_prefix, content.len());
         }
         if let Some(ref tcs) = msg.tool_calls {
             log::info!(
-                "[DeepSeek] 请求工具: {:?}",
+                "[{}] 请求工具: {:?}",
+                self.log_prefix,
                 tcs.iter().map(|tc| &tc.function.name).collect::<Vec<_>>()
             );
         }
@@ -496,167 +489,5 @@ mod tests {
         // 所有消息类型不包含任何 provider-specific 字段
         let json = serde_json::to_value(&msg).unwrap();
         assert!(!json.to_string().to_lowercase().contains("deepseek"));
-    }
-}
-
-
-// ==================== OpenAI 客户端 ====================
-
-#[derive(Clone)]
-pub struct OpenAIClient {
-    config: ProviderConfig,
-}
-
-impl OpenAIClient {
-    pub fn new(config: &ProviderConfig) -> Self {
-        Self { config: config.clone() }
-    }
-
-    /// 核心调用（不包含重试），OpenAI-compatible API
-    async fn chat_inner(
-        &self,
-        messages: &[LLMMessage],
-        tools: Option<&[ToolDefinition]>,
-    ) -> Result<LLMResponse, String> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
-
-        // 与 DeepSeek 完全相同的消息格式（OpenAI-compatible）
-        let json_messages: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|m| {
-                let mut map = serde_json::Map::new();
-                map.insert("role".to_string(), serde_json::Value::String(m.role.clone()));
-                if let Some(ref content) = m.content {
-                    map.insert("content".to_string(), serde_json::Value::String(content.clone()));
-                } else {
-                    map.insert("content".to_string(), serde_json::Value::String(String::new()));
-                }
-                if let Some(ref tcs) = m.tool_calls {
-                    let calls: Vec<serde_json::Value> = tcs
-                        .iter()
-                        .map(|tc| {
-                            serde_json::json!({
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": tc.arguments
-                                }
-                            })
-                        })
-                        .collect();
-                    map.insert("tool_calls".to_string(), serde_json::Value::Array(calls));
-                }
-                if let Some(ref call_id) = m.tool_call_id {
-                    map.insert("tool_call_id".to_string(), serde_json::Value::String(call_id.clone()));
-                }
-                if let Some(ref name) = m.name {
-                    map.insert("name".to_string(), serde_json::Value::String(name.clone()));
-                }
-                serde_json::Value::Object(map)
-            })
-            .collect();
-
-        let tools_json: Vec<serde_json::Value> = tools
-            .map(|t| {
-                t.iter()
-                    .map(|td| {
-                        serde_json::json!({
-                            "type": "function",
-                            "function": {
-                                "name": td.name,
-                                "description": td.description,
-                                "parameters": td.parameters
-                            }
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let request_body = serde_json::json!({
-            "model": self.config.model,
-            "messages": json_messages,
-            "tools": if tools_json.is_empty() { serde_json::Value::Null } else { serde_json::Value::Array(tools_json) },
-            "temperature": self.config.temperature,
-        });
-
-        log::info!("[OpenAI] 调用 API: model={}, messages={}", self.config.model, messages.len());
-
-        let response = client
-            .post(format!("{}/chat/completions", self.config.base_url))
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| format!("API请求失败: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("API错误 ({}): {}", status, body));
-        }
-
-        #[derive(serde::Deserialize)]
-        struct ChatChoice {
-            message: ChatMessage,
-        }
-        #[derive(serde::Deserialize)]
-        struct ChatMessage {
-            role: String,
-            content: Option<String>,
-            tool_calls: Option<Vec<ChatToolCall>>,
-        }
-        #[derive(serde::Deserialize)]
-        struct ChatToolCall {
-            id: String,
-            function: ChatFunction,
-        }
-        #[derive(serde::Deserialize)]
-        struct ChatFunction {
-            name: String,
-            arguments: String,
-        }
-        #[derive(serde::Deserialize)]
-        struct ChatResponse {
-            choices: Vec<ChatChoice>,
-            usage: Option<Usage>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Usage {
-            prompt_tokens: u64,
-            completion_tokens: u64,
-        }
-
-        let resp: ChatResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("解析API响应失败: {}", e))?;
-
-        let msg = &resp.choices[0].message;
-
-        Ok(LLMResponse {
-            message: LLMResponseMessage {
-                role: msg.role.clone(),
-                content: msg.content.clone(),
-                tool_calls: msg.tool_calls.as_ref().map(|tcs| {
-                    tcs.iter()
-                        .map(|tc| crate::llm::types::LLMToolCall {
-                            id: tc.id.clone(),
-                            name: tc.function.name.clone(),
-                            arguments: tc.function.arguments.clone(),
-                        })
-                        .collect()
-                }),
-            },
-            usage: resp.usage.map(|u| crate::llm::types::LLMUsage {
-                input_tokens: u.prompt_tokens,
-                output_tokens: u.completion_tokens,
-            }),
-        })
     }
 }

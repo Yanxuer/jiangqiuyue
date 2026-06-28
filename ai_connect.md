@@ -141,6 +141,34 @@ trae-agent/           ← 参考项目（字节跳动开源，已对比分析）
 
 **测试结果**: 29 passed, 0 failed, 0 warnings.
 
+### P1: 并行工具执行 — agent.rs 重构
+- `execute_tool` 从 `&mut self` 方法重构为独立函数 `execute_tool_parallel`
+- 新增 `ToolContext` 封装共享资源（FileTools, memory, cli_hub, config）
+- `sequentialthinking` 通过 `SequentialThinkingChange` 输出参数返回状态变更，事后合并到 Agent
+- 工具执行改为三段流水线：预检查（串行）→ `join_all`（并行）→ 结果记录（串行，保持确定性顺序）
+- 文件：`agent.rs`（新增 ToolContext/SequentialThinkingChange，重写工具执行循环）
+
+### P2: 轨迹录制异步 I/O — recorder.rs
+- `TrajectoryRecorder` 所有方法改为 `async fn`
+- `write_record` 内部：`std::fs::OpenOptions` → `tokio::fs::OpenOptions` + `AsyncWriteExt`
+- 不再阻塞 async runtime 的主线程
+- 文件：`trajectory/recorder.rs`、`agent.rs`、`main.rs`（所有调用点添加 `.await`）
+
+### P3: LLM Provider 代码去重 — OpenAICompatClient
+- 将 `DeepSeekClient` 和 `OpenAIClient` 合并为单一 `OpenAICompatClient`
+- 以 `log_prefix` 参数化日志输出（`"[DeepSeek]"` / `"[OpenAI]"`）
+- `LLMProvider::chat` 消除两个分支的重复重试逻辑，统一为单一调用
+- 删除约 150 行重复代码
+- 文件：`llm/provider.rs`
+
+### P4: 记忆编码 spawn_blocking — memory.rs
+- `AgentMemory::add` 和 `::search` 改为 `async fn`
+- FastEmbed 的同步 `embed()` 调用封装在 `tokio::task::spawn_blocking` 中
+- 编码时不再阻塞 async runtime
+- 文件：`memory.rs`、`agent.rs`、`main.rs`
+
+**验证**: 29/29 单元测试通过，编译零警告。
+
 ### 历史会话已完成
 - 模型迁移 DeepSeek V3 → V4（deepseek-v4-flash / deepseek-v4-pro）
 - CLI 启动脚本（start-agent.ps1）+ 环境预检
