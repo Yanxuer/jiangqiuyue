@@ -212,11 +212,13 @@
                     </div>
                 </div>
                 <div class="dialog-header-center">
-                    <span class="dialog-nav-item active">对话</span>
+                    <span class="dialog-nav-item active" onclick="switchToChat()">对话</span>
                     <span class="dialog-nav-item" onclick="openFileManager()">文件</span>
                     <span class="dialog-nav-item" onclick="openMemorySearch()">记忆</span>
                     <span class="dialog-nav-item" id="docNavBtn" onclick="toggleDocSidebar()">文档</span>
                     <span class="dialog-nav-item" onclick="openCliHub()">CLI-Hub</span>
+                    <span class="dialog-nav-item" onclick="openDesktopPanel()">桌面</span>
+                    <span class="dialog-nav-item" onclick="openLogPanel()">日志</span>
                 </div>
                 <div class="dialog-header-right">
                     <div class="software-badge" id="softwareBadge" onclick="openSoftwarePanel()" title="查看可用软件">💻 <span id="softwareCount">...</span></div>
@@ -663,5 +665,91 @@
             </div>
         </div>
     </div>
+<!-- 桌面控制面板 -->
+    <div class="modal-overlay" id="desktopModal">
+        <div class="modal modal-desktop">
+            <div class="modal-header">
+                <h3>🖥️ 桌面控制</h3>
+                <button class="modal-close" onclick="closeDesktopPanel()">✕</button>
+            </div>
+            <div class="modal-body desktop-body">
+                <div class="desktop-status-bar" id="desktopStatusBar">
+                    <span class="desktop-status-dot" id="desktopStatusDot"></span>
+                    <span class="desktop-status-text" id="desktopStatusText">正在检测 cua-driver...</span>
+                </div>
+                <div class="desktop-tools-grid" id="desktopToolsGrid">
+                    <div class="desktop-tool-card">
+                        <div class="desktop-tool-icon">📸</div>
+                        <div class="desktop-tool-name">截图</div>
+                        <div class="desktop-tool-desc">capture_screen</div>
+                    </div>
+                    <div class="desktop-tool-card">
+                        <div class="desktop-tool-icon">🖱️</div>
+                        <div class="desktop-tool-name">鼠标点击</div>
+                        <div class="desktop-tool-desc">click</div>
+                    </div>
+                    <div class="desktop-tool-card">
+                        <div class="desktop-tool-icon">⌨️</div>
+                        <div class="desktop-tool-name">键盘输入</div>
+                        <div class="desktop-tool-desc">type_text / key_press</div>
+                    </div>
+                    <div class="desktop-tool-card">
+                        <div class="desktop-tool-icon">🪟</div>
+                        <div class="desktop-tool-name">窗口管理</div>
+                        <div class="desktop-tool-desc">get_window_list / close_window</div>
+                    </div>
+                    <div class="desktop-tool-card">
+                        <div class="desktop-tool-icon">🎯</div>
+                        <div class="desktop-tool-name">鼠标移动</div>
+                        <div class="desktop-tool-desc">move_mouse</div>
+                    </div>
+                    <div class="desktop-tool-card">
+                        <div class="desktop-tool-icon">📋</div>
+                        <div class="desktop-tool-name">剪贴板</div>
+                        <div class="desktop-tool-desc">get_clipboard</div>
+                    </div>
+                    <div class="desktop-tool-card">
+                        <div class="desktop-tool-icon">🚀</div>
+                        <div class="desktop-tool-name">启动软件</div>
+                        <div class="desktop-tool-desc">launch_software</div>
+                    </div>
+                </div>
+                <div class="desktop-hint" id="desktopHint" style="display:none">
+                    <p>⚠️ cua-driver 未安装或未运行</p>
+                    <p class="desktop-hint-sub">请安装 <code>cua-driver</code> 后刷新页面，系统将自动热检测并启动</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 系统日志面板 -->
+    <div class="modal-overlay" id="logModal">
+        <div class="modal modal-log">
+            <div class="modal-header">
+                <h3>📋 系统日志 · DEFINE→PLAN→BUILD→VERIFY→REVIEW→SHIP</h3>
+                <div class="log-header-actions">
+                    <button class="log-clear-btn" onclick="clearLogPanel()" title="清空日志">清空</button>
+                    <button class="log-export-btn" onclick="exportLog()" title="导出日志">导出</button>
+                    <button class="log-auto-btn" id="logAutoBtn" onclick="toggleLogAutoScroll()" title="自动滚动">📌</button>
+                    <button class="modal-close" onclick="closeLogPanel()">✕</button>
+                </div>
+            </div>
+            <div class="modal-body log-body">
+                <div class="log-filter-bar">
+                    <span class="log-filter-chip" data-stage="DEFINE" onclick="filterLogs('DEFINE')">🔵 DEFINE</span>
+                    <span class="log-filter-chip" data-stage="PLAN" onclick="filterLogs('PLAN')">🟢 PLAN</span>
+                    <span class="log-filter-chip" data-stage="BUILD" onclick="filterLogs('BUILD')">🟡 BUILD</span>
+                    <span class="log-filter-chip" data-stage="VERIFY" onclick="filterLogs('VERIFY')">🟠 VERIFY</span>
+                    <span class="log-filter-chip" data-stage="REVIEW" onclick="filterLogs('REVIEW')">🟣 REVIEW</span>
+                    <span class="log-filter-chip" data-stage="SHIP" onclick="filterLogs('SHIP')">🔴 SHIP</span>
+                    <span class="log-filter-chip active" data-stage="ALL" onclick="filterLogs('ALL')">全部</span>
+                </div>
+                <div class="log-container" id="logContainer">
+                    <div class="log-empty" id="logEmpty">暂无日志，开始一个任务后将在此显示 DEFINE→SHIP 各阶段执行状态</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

@@ -10,6 +10,7 @@ pub mod cli_hub;
 pub mod cli_tools;
 pub mod cli_generator;
 pub mod cli_guide;
+pub mod desktop_control;
 pub mod retry;
 pub mod llm;
 pub mod trajectory;

@@ -1,1 +1,0 @@
-"""cli-anything ChromaDB harness."""

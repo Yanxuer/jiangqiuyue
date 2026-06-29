@@ -198,7 +198,7 @@ impl OpenAICompatClient {
             "temperature": self.config.temperature,
         });
 
-        log::info!("[{}] 调用 API: model={}, messages={}", self.log_prefix, self.config.model, messages.len());
+        log::info!("[{}] 调用 API: model={}, messages={}, base_url={}", self.log_prefix, self.config.model, messages.len(), self.config.base_url);
 
         let response = client
             .post(format!("{}/chat/completions", self.config.base_url))
@@ -207,11 +207,16 @@ impl OpenAICompatClient {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| format!("API请求失败: {}", e))?;
+            .map_err(|e| {
+                log::error!("[{}] API请求网络错误: {}", self.log_prefix, e);
+                format!("API请求失败: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        log::info!("[{}] API 响应状态: {}", self.log_prefix, status);
+        if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            log::error!("[{}] API错误 {}: {}", self.log_prefix, status, body);
             return Err(format!("API错误 ({}): {}", status, body));
         }
 

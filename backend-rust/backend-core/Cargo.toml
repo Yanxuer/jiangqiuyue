@@ -53,3 +53,6 @@ regex = "1"
 
 # Random number generation (for API retry backoff)
 rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

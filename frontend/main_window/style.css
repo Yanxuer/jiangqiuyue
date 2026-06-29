@@ -959,7 +959,7 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 24px;
+    padding: 14px 20px;
     background: var(--bg-glass);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
@@ -1004,11 +1004,12 @@ html, body {
 
 .dialog-header-center {
     display: flex;
-    gap: 4px;
+    gap: 2px;
+    flex-shrink: 0;
 }
 
 .dialog-nav-item {
-    padding: 6px 16px;
+    padding: 6px 10px;
     font-size: 13px;
     font-weight: 500;
     color: var(--text-muted);
@@ -1016,6 +1017,7 @@ html, body {
     cursor: pointer;
     transition: all 0.2s;
     letter-spacing: 0.3px;
+    white-space: nowrap;
 }
 
 .dialog-nav-item:hover {
@@ -3463,4 +3465,280 @@ html, body {
     border: none;
     border-top: 1px solid var(--border-glass);
     margin: 12px 0;
+}
+
+/* ==================== 桌面控制面板 ==================== */
+
+.modal-desktop {
+    width: 520px;
+    max-height: 80vh;
+}
+
+.desktop-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.desktop-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-sm);
+}
+
+.desktop-status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #6b7280;
+    flex-shrink: 0;
+    transition: background 0.3s;
+}
+
+.desktop-status-dot.connected {
+    background: #22c55e;
+    box-shadow: 0 0 10px rgba(34, 197, 94, 0.5);
+}
+
+.desktop-status-dot.disconnected {
+    background: #f59e0b;
+    box-shadow: 0 0 10px rgba(245, 158, 11, 0.4);
+}
+
+.desktop-status-dot.error {
+    background: #ef4444;
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
+}
+
+.desktop-status-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.desktop-tools-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+}
+
+.desktop-tool-card {
+    padding: 14px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-sm);
+    transition: all 0.2s;
+}
+
+.desktop-tool-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--border-glass-hover);
+    transform: translateY(-1px);
+}
+
+.desktop-tool-icon {
+    font-size: 22px;
+    margin-bottom: 6px;
+}
+
+.desktop-tool-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+
+.desktop-tool-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.desktop-hint {
+    padding: 14px;
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    color: #f59e0b;
+    line-height: 1.6;
+}
+
+.desktop-hint-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.desktop-hint code {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+/* ==================== 系统日志面板 ==================== */
+
+.modal-log {
+    width: 720px;
+    max-height: 85vh;
+}
+
+.log-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow: hidden;
+}
+
+.log-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.log-clear-btn {
+    padding: 4px 12px;
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 6px;
+    color: #ef4444;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.log-clear-btn:hover {
+    background: rgba(239, 68, 68, 0.25);
+}
+
+.log-export-btn {
+    padding: 4px 12px;
+    background: rgba(59, 130, 246, 0.15);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 6px;
+    color: #3b82f6;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.log-export-btn:hover {
+    background: rgba(59, 130, 246, 0.25);
+}
+
+.log-auto-btn {
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-glass);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.log-auto-btn.pinned {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.3);
+    color: #3b82f6;
+}
+
+.log-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.log-filter-chip {
+    padding: 3px 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-glass);
+    border-radius: 14px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+}
+
+.log-filter-chip:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+}
+
+.log-filter-chip.active {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.3);
+    color: #3b82f6;
+}
+
+.log-container {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 55vh;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-sm);
+    font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.7;
+}
+
+.log-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.log-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.log-container::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+.log-empty {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 40px 20px;
+    font-family: 'Inter', sans-serif;
+}
+
+.log-entry {
+    padding: 2px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.log-entry.stage-define { color: #60a5fa; }
+.log-entry.stage-plan { color: #4ade80; }
+.log-entry.stage-build { color: #facc15; }
+.log-entry.stage-verify { color: #f97316; }
+.log-entry.stage-review { color: #c084fc; }
+.log-entry.stage-ship { color: #ef4444; }
+.log-entry.stage-default { color: var(--text-muted); }
+
+.log-entry .log-time {
+    color: var(--text-muted);
+    margin-right: 8px;
+    font-size: 11px;
+}
+
+.log-entry.hidden {
+    display: none;
+}
+
+/* 导航项激活状态 */
+.dialog-nav-item.active {
+    color: var(--accent-cyan);
+    background: rgba(36, 194, 216, 0.12);
 }

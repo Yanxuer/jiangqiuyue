@@ -350,6 +350,13 @@ function connectWebSocket() {
                 appLogError('收到已废弃的 agent_reply 消息，请检查后端是否误广播');
                 break;
 
+            // ===== 阶段日志（DEFINE→SHIP） =====
+            case 'stage_log':
+                if (data.message) {
+                    addLogEntry(data.message);
+                }
+                break;
+
             default:
                 appLog('WS 收到未知消息类型:', data.type);
                 break;
@@ -380,6 +387,7 @@ function scheduleReconnect() {
 }
 
 function updateConnectionStatus(connected) {
+    if (!connStatus) return;
     const dot = connStatus.querySelector('.status-dot');
     const label = connStatus.querySelector('.status-label');
     if (dot) {
@@ -405,14 +413,16 @@ function handleKeyDown(e) {
 }
 
 async function sendMessage() {
+    if (!dialogInput) return;
     const text = dialogInput.value.trim();
     if (!text || isThinking) return;
 
+    // 立即设置 isThinking，防止快速重复点击导致重复发送
+    setIsThinking(true);
     dialogInput.value = '';
     dialogInput.style.height = 'auto';
 
     addMessage('user', text);
-    setIsThinking(true);
 
     try {
         const res = await fetch(`${API_BASE}/chat`, {
@@ -442,11 +452,13 @@ async function sendMessage() {
 
 function setIsThinking(val) {
     isThinking = val;
-    dialogSendBtn.disabled = val;
-    dialogSendBtn.style.opacity = val ? '0.5' : '1';
+    if (dialogSendBtn) {
+        dialogSendBtn.disabled = val;
+        dialogSendBtn.style.opacity = val ? '0.5' : '1';
+    }
 
     removeThinkingIndicator();
-    if (val) {
+    if (val && dialogMessages) {
         const div = document.createElement('div');
         div.className = 'thinking-indicator';
         div.id = 'thinkingIndicator';
@@ -462,6 +474,7 @@ function removeThinkingIndicator() {
 }
 
 function addMessage(role, content, toolsUsed) {
+    if (!dialogMessages) return;
     removeWelcomeMessage();
 
     const div = document.createElement('div');
@@ -519,7 +532,7 @@ function addMessage(role, content, toolsUsed) {
 
     div.appendChild(avatar);
     div.appendChild(bubble);
-    dialogMessages.appendChild(div);
+    if (dialogMessages) dialogMessages.appendChild(div);
     scrollToBottom();
 }
 
@@ -529,10 +542,11 @@ function removeWelcomeMessage() {
 }
 
 function scrollToBottom() {
-    dialogMessages.scrollTop = dialogMessages.scrollHeight;
+    if (dialogMessages) dialogMessages.scrollTop = dialogMessages.scrollHeight;
 }
 
 function clearChat() {
+    if (!dialogMessages) return;
     dialogMessages.innerHTML = '';
     const welcome = document.createElement('div');
     welcome.className = 'welcome-message';
@@ -556,10 +570,7 @@ async function openFileManager() {
 
 function closeFileManager() {
     fileModal.classList.remove('show');
-    // 关闭文件管理器后自动跳转到对话
-    const navItems = document.querySelectorAll('.dialog-nav-item');
-    navItems.forEach(n => n.classList.remove('active'));
-    if (navItems.length > 0) navItems[0].classList.add('active');
+    switchToChat();
 }
 
 async function refreshFileList() {
@@ -754,6 +765,7 @@ async function openMemorySearch() {
 
 function closeMemorySearch() {
     memoryModal.classList.remove('show');
+    switchToChat();
 }
 
 async function executeMemorySearch() {
@@ -981,6 +993,7 @@ async function openSoftwarePanel() {
 
 function closeSoftwarePanel() {
     softwareModal.classList.remove('show');
+    switchToChat();
 }
 
 function renderSoftwareGrid(data) {
@@ -1466,6 +1479,7 @@ async function analyzeDirectory(dirData) {
                 message: `请分析以下文件夹中的文件内容，帮我总结项目的结构和关键信息。\n\n文件夹路径: ${dirData.path}\n\n文件内容如下:\n${allContent.substring(0, 80000)}`
             })
         });
+        if (!chatRes.ok) throw new Error(`HTTP ${chatRes.status}`);
         const chatData = await chatRes.json();
         if (chatData.reply) {
             addMessage('agent', chatData.reply);
@@ -1611,6 +1625,7 @@ function openSettings() {
 
 function closeSettings() {
     document.getElementById('settingsModal').classList.remove('show');
+    switchToChat();
 }
 
 async function saveSettings() {
@@ -1732,6 +1747,7 @@ async function openCliHub() {
 
 function closeCliHub() {
     document.getElementById('cliHubModal').classList.remove('show');
+    switchToChat();
 }
 
 async function loadCliHubCategories() {
@@ -2035,4 +2051,191 @@ async function uninstallCliHub() {
     } finally {
         btn.disabled = false;
     }
+}
+
+// ==================== 桌面控制面板 ====================
+
+let desktopModal = document.getElementById('desktopModal');
+
+async function openDesktopPanel() {
+    if (!desktopModal) {
+        desktopModal = document.getElementById('desktopModal');
+    }
+    desktopModal.style.display = 'flex';
+    await checkDesktopStatus();
+}
+
+function closeDesktopPanel() {
+    if (desktopModal) desktopModal.style.display = 'none';
+    switchToChat();
+}
+
+async function checkDesktopStatus() {
+    const dot = document.getElementById('desktopStatusDot');
+    const text = document.getElementById('desktopStatusText');
+    const hint = document.getElementById('desktopHint');
+    const grid = document.getElementById('desktopToolsGrid');
+
+    try {
+        const res = await fetch(`${API_BASE}/health`);
+        const data = await res.json();
+        if (data.desktop_available !== undefined) {
+            if (data.desktop_available) {
+                dot.className = 'desktop-status-dot connected';
+                text.textContent = 'cua-driver 已连接，桌面控制工具可用';
+                hint.style.display = 'none';
+                grid.style.opacity = '1';
+            } else {
+                dot.className = 'desktop-status-dot disconnected';
+                text.textContent = 'cua-driver 未安装或未运行';
+                hint.style.display = 'block';
+                grid.style.opacity = '0.5';
+            }
+        } else {
+            dot.className = 'desktop-status-dot disconnected';
+            text.textContent = '桌面控制状态未知（请升级后端）';
+            hint.style.display = 'none';
+            grid.style.opacity = '0.7';
+        }
+    } catch (e) {
+        dot.className = 'desktop-status-dot error';
+        text.textContent = '无法检测桌面控制状态: ' + e.message;
+        hint.style.display = 'none';
+        grid.style.opacity = '0.5';
+    }
+}
+
+// ==================== 系统日志面板 ====================
+
+let logModal = document.getElementById('logModal');
+let logEntries = [];
+let logAutoScroll = true;
+let logFilter = 'ALL';
+
+function openLogPanel() {
+    if (!logModal) {
+        logModal = document.getElementById('logModal');
+    }
+    logModal.style.display = 'flex';
+    renderLogs();
+}
+
+function closeLogPanel() {
+    if (logModal) logModal.style.display = 'none';
+    switchToChat();
+}
+
+function addLogEntry(message) {
+    const now = new Date();
+    const time = now.toLocaleTimeString('zh-CN', { hour12: false });
+    let stage = 'default';
+
+    if (message.startsWith('[DEFINE]')) stage = 'define';
+    else if (message.startsWith('[PLAN]')) stage = 'plan';
+    else if (message.startsWith('[BUILD]')) stage = 'build';
+    else if (message.startsWith('[VERIFY]')) stage = 'verify';
+    else if (message.startsWith('[REVIEW]')) stage = 'review';
+    else if (message.startsWith('[SHIP]')) stage = 'ship';
+
+    logEntries.push({ time, stage, message });
+    if (logEntries.length > 500) {
+        logEntries = logEntries.slice(-500);
+    }
+    renderLogs();
+}
+
+function renderLogs() {
+    const container = document.getElementById('logContainer');
+    const empty = document.getElementById('logEmpty');
+    if (!container) return;
+
+    const filtered = logFilter === 'ALL'
+        ? logEntries
+        : logEntries.filter(e => e.stage === logFilter.toLowerCase());
+
+    if (filtered.length === 0) {
+        if (empty) {
+            empty.style.display = 'block';
+            container.innerHTML = '';
+            container.appendChild(empty);
+        }
+        return;
+    }
+
+    if (empty) empty.style.display = 'none';
+    container.innerHTML = filtered.map(e =>
+        `<div class="log-entry stage-${e.stage}"><span class="log-time">${e.time}</span>${escapeHtml(e.message)}</div>`
+    ).join('');
+
+    if (logAutoScroll) {
+        container.scrollTop = container.scrollHeight;
+    }
+}
+
+function filterLogs(stage) {
+    logFilter = stage;
+    document.querySelectorAll('.log-filter-chip').forEach(chip => {
+        chip.classList.toggle('active', chip.dataset.stage === stage);
+    });
+    renderLogs();
+}
+
+function clearLogPanel() {
+    logEntries = [];
+    renderLogs();
+}
+
+function toggleLogAutoScroll() {
+    logAutoScroll = !logAutoScroll;
+    const btn = document.getElementById('logAutoBtn');
+    if (btn) {
+        btn.classList.toggle('pinned', logAutoScroll);
+    }
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('modal-overlay')) {
+        if (e.target.id === 'desktopModal') closeDesktopPanel();
+        if (e.target.id === 'logModal') closeLogPanel();
+    }
+});
+
+// ==================== 导航高亮切换 ====================
+
+function switchToChat() {
+    const navItems = document.querySelectorAll('.dialog-nav-item');
+    navItems.forEach(n => n.classList.remove('active'));
+    if (navItems.length > 0) navItems[0].classList.add('active');
+}
+
+// ==================== 日志导出 ====================
+
+function exportLog() {
+    if (logEntries.length === 0) {
+        alert('暂无日志可导出');
+        return;
+    }
+
+    const now = new Date();
+    const filename = `agent-log-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}.log`;
+
+    const lines = logEntries.map(e => `[${e.time}] ${e.message}`);
+    const content = lines.join('\n');
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }

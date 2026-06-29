@@ -8,6 +8,7 @@ use crate::llm::provider::LLMProvider;
 use crate::llm::types::{ToolDefinition, LLMToolCall};
 use crate::trajectory::recorder::TrajectoryRecorder;
 use crate::screen;
+use crate::desktop_control;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,6 +24,7 @@ pub struct ToolContext {
     pub memory: Arc<Mutex<AgentMemory>>,
     pub cli_hub: Arc<Mutex<CliHub>>,
     pub config: Config,
+    pub desktop: Arc<Mutex<desktop_control::CuaDriverClient>>,
 }
 
 /// 顺序思维状态变更，从 execute_tool 返回后合并到 Agent
@@ -100,6 +102,9 @@ pub struct Agent {
     pub cli_hub: Arc<Mutex<CliHub>>,
     provider: LLMProvider,
     recorder: Option<TrajectoryRecorder>,
+    desktop: Arc<Mutex<desktop_control::CuaDriverClient>>,
+    // 日志广播（用于前端实时查看 DEFINE→SHIP 各阶段状态）
+    log_sender: Option<tokio::sync::mpsc::Sender<String>>,
     // 多轮迭代状态
     iteration_count: u32,
     progress: TaskProgress,
@@ -122,6 +127,7 @@ impl Agent {
         cli_hub: CliHub,
         provider: LLMProvider,
         recorder: Option<TrajectoryRecorder>,
+        desktop: Arc<Mutex<desktop_control::CuaDriverClient>>,
     ) -> Self {
         Agent {
             config,
@@ -132,6 +138,8 @@ impl Agent {
             cli_hub: Arc::new(Mutex::new(cli_hub)),
             provider,
             recorder,
+            desktop,
+            log_sender: None,
             iteration_count: 0,
             progress: TaskProgress {
                 completed: Vec::new(),
@@ -146,12 +154,29 @@ impl Agent {
         }
     }
 
+    /// 设置日志发送器，用于向前端实时推送 DEFINE→SHIP 各阶段日志
+    pub fn set_log_sender(&mut self, sender: tokio::sync::mpsc::Sender<String>) {
+        self.log_sender = Some(sender);
+    }
+
+    /// 发送阶段日志（同时输出到 log crate 和前端广播通道）
+    fn send_stage_log(&self, msg: &str) {
+        log::info!("{}", msg);
+        if let Some(ref sender) = self.log_sender {
+            let _ = sender.try_send(msg.to_string());
+        }
+    }
+
     pub fn file_tools(&self) -> &FileTools {
         &self.file_tools
     }
 
     pub fn memory(&self) -> &Arc<Mutex<AgentMemory>> {
         &self.memory
+    }
+
+    pub fn desktop(&self) -> &Arc<Mutex<desktop_control::CuaDriverClient>> {
+        &self.desktop
     }
 
     pub fn get_config(&self) -> &Config {
@@ -170,46 +195,105 @@ impl Agent {
             role: "system".to_string(),
             content: Some(serde_json::Value::String(
                 r#"# 角色定位
-你是江秋月——命令行/IDE 内自主编程智能体，具备任务规划、文件读写、终端执行、联网检索、
-多轮迭代、记忆回溯、安全沙箱全套能力。你能自主完成完整软件工程任务：理解需求、浏览项目、
-编写/修改代码、运行调试、检索文档，多步骤自主迭代，无需用户分步指挥。
+你是江秋月——桌面级自主编程智能体，具备任务规划、文件读写、终端执行、联网检索、
+多轮迭代、记忆回溯、安全沙箱、桌面控制全套能力。你遵循严谨的软件工程流程：
+DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP，每一步都有明确的质量门禁。
 
-# 核心执行流程（强制遵守）
-1. **任务拆解**：收到用户需求后，先规划完整执行步骤，明确需要查看哪些文件、运行哪些命令，
-   禁止直接修改代码。用 view_file 浏览项目结构。
-2. **信息收集**：项目不熟悉时，优先调用 view_file 浏览目录、读取核心代码；
-   遇到报错/陌生 API 调用 web_search。
-3. **迭代修改**：单次只做一处代码修改，修改后调用 bash_exec 运行验证，根据报错反复修复。
-4. **终止判断**：全部功能实现、无运行报错、需求完全满足后，调用 task_complete 结束流程；
-   信息不足时持续调用工具，禁止直接输出最终答案。
+# 工程生命周期（强制遵守）
 
-# 工具使用严格约束
-1. 禁止无意义调用工具：简单文字解释类问题，不调用任何工具；
-   仅代码操作、文件读取、运行、检索时使用。
-2. bash_exec 安全限制：禁止执行 rm -rf /、格式化磁盘、删除系统文件等高风险指令；
-   所有命令在隔离沙箱运行。
-3. 调用次数限制：单次任务 web_search 最多 5 次，单文件修改不超过 10 次迭代，
-   超出后主动向用户说明卡点。
-4. 文件操作规范：修改前必须先用 view_file 读取原文，保证替换字符串完全匹配，
-   不破坏原有可用逻辑。
+## 阶段一：DEFINE — 明确需求，编写规格
+1. **表面假设**：在开始任何实现前，先列出你对需求的假设，让用户纠正：
+   ```
+   ASSUMPTIONS:
+   1. 这是 Web 应用（非移动端）
+   2. 使用已有项目结构
+   3. 目标平台是 Windows
+   → 如有偏差请纠正，否则我按此执行。
+   ```
+2. **编写规格**：用 view_file 浏览项目结构，明确六个维度：
+   - 目标：做什么？谁用？成功标准是什么？
+   - 命令：构建/测试/运行命令是什么？
+   - 结构：源码在哪？测试在哪？配置在哪？
+   - 风格：遵循项目已有命名和代码风格
+   - 测试：用什么框架？测试放哪？覆盖率要求？
+   - 边界：Always do / Ask first / Never do 三层约束
 
-# 记忆与进度管理
-每完成 3 轮工具调用，自动记录任务进度：
-PROGRESS：已完成操作列表
-REMAINING：待完成步骤
-KEY_CODE：核心修改代码片段
-ERROR_LOG：出现过的报错与解决方案
+## 阶段二：PLAN — 任务拆解，制定计划
+1. **依赖图分析**：识别模块间的依赖关系，自底向上排定实施顺序
+2. **垂直切片**：每个任务是一条完整功能路径，不是按层拆分
+   - 错误：Task1=全部数据库 → Task2=全部API → Task3=全部UI
+   - 正确：Task1=创建功能(DB+API+UI) → Task2=列表功能(查询+API+UI)
+3. **任务粒度**：每个任务应在单次迭代中可完成、可测试、可验证，不超过约100行代码
 
-# 输出格式硬性规则
-你的所有输出必须是标准 tool_calls 工具调用格式，禁止自由文字聊天。
+## 阶段三：BUILD — 增量实现，小步快跑
+1. **增量周期**：Implement → Test → Verify → Commit → Next slice
+2. **一次只改一处**：每轮迭代只修改一个逻辑相关的代码块
+3. **改前必读**：修改任何文件前，先用 view_file 读取原文
+4. **改后必验**：修改后立即运行编译/测试，确认通过再继续
+5. **风险优先**：先攻克最不确定、风险最高的部分
+
+## 阶段四：VERIFY — 测试验证，排错修复
+1. **Stop the Line 规则**：遇到任何报错/失败，立即停止新增功能：
+   a. PRESERVE 证据（错误输出、日志、复现步骤）
+   b. DIAGNOSE 使用系统排查（检查最近改动、对比差异、二分定位）
+   c. FIX 根因而非表面症状
+   d. GUARD 添加回归测试防止复发
+   e. RESUME 验证通过后才继续
+2. **不可复现的 Bug**：添加日志和时序信息，在隔离环境中重试，记录条件后监控
+3. **TDD 原则**：修复 Bug 前先写一个能复现 Bug 的测试，修复后确认测试通过
+
+## 阶段五：REVIEW — 代码审查，质量把关
+在调用 task_complete 前，对全部改动进行五轴审查：
+1. **正确性**：是否匹配需求？边界情况（null/空/边界值）处理了？错误路径覆盖了？
+2. **可读性**：命名是否描述意图？控制流是否直观？有没有"聪明"但难懂的代码？
+3. **架构**：是否遵循项目已有模式？有没有循环依赖？模块边界是否清晰？
+4. **安全**：用户输入是否验证？密钥是否硬编码？SQL 是否参数化？输出是否编码？
+   - 所有外部输入（API、文件、用户输入）视为不可信
+   - 密码必须哈希（bcrypt/scrypt/argon2），禁止明文存储
+   - 敏感操作必须有审计日志
+5. **性能**：有没有 N+1 查询？循环内有没有不必要的 I/O？资源是否正确释放？
+
+## 阶段六：SHIP — 交付完成，定义标准
+调用 task_complete 前必须确认以下全部通过：
+- [ ] 所有验收标准已满足
+- [ ] 修改后代码已编译通过并运行验证
+- [ ] 没有遗留的调试代码、注释掉的旧代码、TODO 标记
+- [ ] 没有引入无关的改动或重构
+- [ ] 外部接口变更已考虑向后兼容
+- [ ] 安全影响已审查（输入验证、认证、数据处理）
+- [ ] 在 summary 中提供完整总结：改了什么、为什么这样改、运行结果、注意事项
+
+# 核心行为准则
+
+## 假设前置
+模糊需求不要默默猜测，先列出假设让用户确认。这是最便宜的错误预防方式。
+
+## 主动质疑
+发现方案有明显问题时，直接指出并量化影响（"这会在每次请求增加约200ms延迟"），
+然后提出替代方案。你不是应声虫。
+
+## 越简单越好
+- 能用 10 行解决的问题不要写 100 行
+- 不到第三次复用时不要抽象
+- 相比"精巧"，优先选择"明显"
+- 删除死代码比保留注释替代更有价值
+
+## 困惑管理
+遇到矛盾需求或不清楚的规格时：
+1. 停止，不要猜测
+2. 明确指出困惑点
+3. 列出权衡或追问澄清
+4. 等待用户确认后继续
+
+# 工具使用约束
+1. 简单文字解释类问题不调用工具；仅代码/文件/运行/检索时使用
+2. bash_exec 禁止 rm -rf /、格式化磁盘、删除系统文件等高风险指令
+3. web_search 单次任务最多 5 次，单文件修改不超过 10 次迭代
+4. 歧义时优先问用户，而非自由发挥
+
+# 输出格式
+所有输出必须是标准 tool_calls 格式，禁止自由文字聊天。
 仅当调用 task_complete 时，在 summary 中使用自然语言完整总结。
-
-# 禁止行为
-1. 跳过步骤直接生成完整代码，不验证运行；
-2. 一次性批量修改多个无关文件；
-3. 编造不存在的 API、库函数；
-4. 忽略运行报错，直接告知用户完成；
-5. 超出用户需求额外新增无关功能。
 
 # 可用工具速查
 | 工具 | 用途 | 关键参数 |
@@ -224,6 +308,13 @@ ERROR_LOG：出现过的报错与解决方案
 | add_memory | 保存到长期记忆 | content |
 | find_software | 搜索本机软件 | query |
 | launch_software | 启动软件 | path |
+| desktop_screenshot | 后台桌面截图（全屏/窗口级） | window_title?, monitor? |
+| desktop_click | 后台鼠标点击 | x, y, button? |
+| desktop_type | 后台键盘输入文本 | text |
+| desktop_key | 按键/组合键 | keys |
+| desktop_list_windows | 枚举桌面窗口 | filter? |
+| desktop_focus_window | 聚焦指定窗口 | window_title |
+| desktop_scroll | 鼠标滚轮滚动 | x?, y?, direction?, amount? |
 | list_clis | 列出 CLI 工具 | category, source |
 | search_clis | 搜索 CLI 工具 | query |
 | install_cli | 安装 CLI 工具 | name |
@@ -359,6 +450,90 @@ ERROR_LOG：出现过的报错与解决方案
                     "required": ["path"]
                 }),
             },
+            // === 桌面控制工具 (cua-driver) ===
+            ToolDefinition {
+                name: "desktop_screenshot".to_string(),
+                description: "截取桌面或指定窗口的截图（后台操作，不抢用户焦点）。\n- 不传参数: 截取全屏\n- 传 window_title: 截取标题包含该关键词的窗口\n- 结果包含 base64 编码的图片".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "window_title": {"type": "string", "description": "窗口标题关键词（可选），不传则全屏截图"},
+                        "monitor": {"type": "integer", "description": "屏幕编号，1=主屏，默认1"}
+                    },
+                    "required": []
+                }),
+            },
+            ToolDefinition {
+                name: "desktop_click".to_string(),
+                description: "在指定屏幕坐标处点击鼠标（后台操作，不抢用户焦点）。可用于点击按钮、菜单等UI元素".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer", "description": "X坐标（像素）"},
+                        "y": {"type": "integer", "description": "Y坐标（像素）"},
+                        "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "鼠标按键，默认left"}
+                    },
+                    "required": ["x", "y"]
+                }),
+            },
+            ToolDefinition {
+                name: "desktop_type".to_string(),
+                description: "在桌面当前焦点位置输入文本（后台操作，不抢用户焦点）。需先调用 desktop_focus_window 确保目标窗口在前台".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "要输入的文本内容"}
+                    },
+                    "required": ["text"]
+                }),
+            },
+            ToolDefinition {
+                name: "desktop_key".to_string(),
+                description: "按下键盘按键或组合键（后台操作）。\n- 单键: 'enter', 'escape', 'tab', 'backspace', 'delete'\n- 组合键: 'ctrl+s', 'alt+f4', 'ctrl+shift+escape'".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "keys": {"type": "string", "description": "按键或组合键，如 'enter', 'ctrl+s'"}
+                    },
+                    "required": ["keys"]
+                }),
+            },
+            ToolDefinition {
+                name: "desktop_list_windows".to_string(),
+                description: "列出当前桌面所有可见窗口。可传入 filter 参数按标题或进程名过滤".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "filter": {"type": "string", "description": "窗口标题或进程名关键词过滤（可选）"}
+                    },
+                    "required": []
+                }),
+            },
+            ToolDefinition {
+                name: "desktop_focus_window".to_string(),
+                description: "将指定窗口切换到前台（后台操作，不抢用户焦点）。配合 desktop_type/desktop_click 使用".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "window_title": {"type": "string", "description": "窗口标题关键词，用于匹配目标窗口"}
+                    },
+                    "required": ["window_title"]
+                }),
+            },
+            ToolDefinition {
+                name: "desktop_scroll".to_string(),
+                description: "在指定位置执行鼠标滚轮滚动（后台操作）。用于滚动网页、文档等".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer", "description": "X坐标，默认当前鼠标位置"},
+                        "y": {"type": "integer", "description": "Y坐标，默认当前鼠标位置"},
+                        "direction": {"type": "string", "enum": ["up", "down"], "description": "滚动方向，默认down"},
+                        "amount": {"type": "integer", "description": "滚动量（行数），默认3"}
+                    },
+                    "required": []
+                }),
+            },
             ToolDefinition {
                 name: "list_clis".to_string(),
                 description: "列出 CLI-Hub 中所有可用的 CLI 工具，支持按分类或来源筛选".to_string(),
@@ -445,11 +620,17 @@ ERROR_LOG：出现过的报错与解决方案
     // ==================== 多轮迭代运行循环 ====================
 
     pub async fn run(&mut self, user_input: &str, image_base64: Option<&str>) -> Result<AgentResult, String> {
-        log::info!("[Agent] ========== 新任务开始 ==========");
-        log::info!("[Agent] 用户输入: {}", user_input);
+        // ============ 阶段一：DEFINE — 明确需求 ============
+        self.send_stage_log("[DEFINE] ╔══════════════════════════════════════════╗");
+        self.send_stage_log("[DEFINE] ║       阶段一：DEFINE — 明确需求          ║");
+        self.send_stage_log("[DEFINE] ╚══════════════════════════════════════════╝");
+        self.send_stage_log(&format!("[DEFINE] 用户输入: {}", user_input));
+        self.send_stage_log(&format!("[DEFINE] 多模态: {}", image_base64.is_some()));
+        self.send_stage_log(&format!("[DEFINE] Provider: {} / {}", self.provider.name(), self.provider.model()));
 
         // 重置消息历史（只保留系统提示词）
         self.messages = vec![Self::system_prompt()];
+        log::info!("[DEFINE] 系统提示词已加载 ({} 字符)", Self::system_prompt().content.unwrap_or_default().to_string().len());
 
         // 重置迭代状态
         self.iteration_count = 0;
@@ -496,13 +677,27 @@ ERROR_LOG：出现过的报错与解决方案
         let mut all_tool_calls: Vec<String> = Vec::new();
 
         // ============ 主循环：多轮迭代直到 task_complete ============
+        let mut is_first_iteration = true;
         loop {
             self.iteration_count += 1;
             log::info!("[Agent] --- 迭代 #{}/{} ---", self.iteration_count, MAX_ITERATIONS);
 
+            // 阶段二：PLAN — 首次迭代时输出计划阶段日志
+            if is_first_iteration {
+                self.send_stage_log("[PLAN]   ╔══════════════════════════════════════════╗");
+                self.send_stage_log("[PLAN]   ║       阶段二：PLAN — 任务拆解           ║");
+                self.send_stage_log("[PLAN]   ╚══════════════════════════════════════════╝");
+                self.send_stage_log(&format!("[PLAN]   可用工具: {} 个", Self::tools_definition().len()));
+                self.send_stage_log("[PLAN]   开始调用 LLM 进行任务拆解与规划...");
+                is_first_iteration = false;
+            }
+
             // 检查迭代上限
             if self.iteration_count > MAX_ITERATIONS {
                 log::warn!("[Agent] 达到最大迭代次数 {}", MAX_ITERATIONS);
+                log::warn!("[SHIP]   强制终止: 迭代超限 ({} > {})", self.iteration_count, MAX_ITERATIONS);
+                log::warn!("[SHIP]   已完成: {:?}", self.progress.completed);
+                log::warn!("[SHIP]   错误日志: {:?}", self.progress.error_log);
                 let summary = format!(
                     "任务迭代次数已达上限({})。\n已完成: {}\n剩余: {}\n报错记录: {}",
                     MAX_ITERATIONS,
@@ -541,7 +736,17 @@ ERROR_LOG：出现过的报错与解决方案
                 .collect();
 
             let tools = Self::tools_definition();
-            let llm_response = self.provider.chat(&message_payload, Some(&tools)).await?;
+            log::info!("[Agent] 迭代 #{}: 准备调用 LLM (messages={}, tools={})", self.iteration_count, self.messages.len(), tools.len());
+            self.send_stage_log(&format!("[PLAN]   正在调用 LLM (迭代 #{}, 消息数={})...", self.iteration_count, self.messages.len()));
+
+            let llm_response = self.provider.chat(&message_payload, Some(&tools)).await.map_err(|e| {
+                log::error!("[Agent] LLM 调用失败: {}", e);
+                self.send_stage_log(&format!("[PLAN]   ❌ LLM 调用失败: {}", e));
+                e
+            })?;
+            log::info!("[Agent] LLM 调用成功: content_len={}, tool_calls={}",
+                llm_response.message.content.as_ref().map(|c| c.len()).unwrap_or(0),
+                llm_response.message.tool_calls.as_ref().map(|t| t.len()).unwrap_or(0));
             let resp_msg = &llm_response.message;
 
             // 轨迹录制：LLM 调用
@@ -562,6 +767,7 @@ ERROR_LOG：出现过的报错与解决方案
             if tool_calls.is_empty() {
                 let reply = resp_msg.content.clone().unwrap_or_default();
                 log::info!("[Agent] LLM 无工具调用，返回文本 ({}字符)", reply.len());
+                self.send_stage_log(&format!("[SHIP]   LLM 直接返回文本 ({}字符)", reply.len()));
                 self.messages.push(ChatMessage {
                     role: "assistant".to_string(),
                     content: Some(serde_json::Value::String(reply.clone())),
@@ -615,7 +821,7 @@ ERROR_LOG：出现过的报错与解决方案
                 let args: serde_json::Value =
                     serde_json::from_str(&tc.arguments).unwrap_or_default();
 
-                log::info!("[Agent] 检查工具: {} (参数: {})", tool_name, args);
+                log::info!("[BUILD]  ─── 工具调用检测: {} (参数: {})", tool_name, args);
 
                 if tool_name == "web_search" {
                     self.web_search_count += 1;
@@ -656,6 +862,8 @@ ERROR_LOG：出现过的报错与解决方案
                 filtered.push(FilteredTool { id: tc.id.clone(), name: tool_name, args });
             }
 
+            self.send_stage_log(&format!("[BUILD]  ─── 阶段三：BUILD — 并行执行 {} 个工具 ───", filtered.len()));
+
             // Step 2: 并行执行所有通过检查的工具
             let tp_for_st = self.progress.clone();
             let iter_for_st = self.iteration_count;
@@ -664,17 +872,24 @@ ERROR_LOG：出现过的报错与解决方案
             for (idx, ft) in filtered.iter().enumerate() {
                 let name = ft.name.clone();
                 let args = ft.args.clone();
+                let id = ft.id.clone();
                 let ctx = ToolContext {
                     file_tools: self.file_tools.clone(),
                     memory: self.memory.clone(),
                     cli_hub: self.cli_hub.clone(),
                     config: self.config.clone(),
+                    desktop: self.desktop.clone(),
                 };
                 let tp = tp_for_st.clone();
                 let iter = iter_for_st;
                 handles.push((idx, ft.id.clone(), Box::pin(async move {
                     let mut st = None;
+                    log::info!("[BUILD]  → 执行工具: {} (id={})", name, id);
                     let value = execute_tool_parallel(&ctx, &name, args, &tp, iter, &mut st).await;
+                    let is_err = value.get("error").is_some();
+                    log::info!("[BUILD]  ← 工具完成: {} (id={}) {}",
+                        name, id,
+                        if is_err { "❌ 有错误" } else { "✅ 成功" });
                     (value, st)
                 })));
             }
@@ -689,6 +904,7 @@ ERROR_LOG：出现过的报错与解决方案
             results.sort_by_key(|(idx, _, _, _)| *idx);
 
             // Step 3: 顺序记录（轨迹 + 进度 + messages，保持确定性顺序）
+            self.send_stage_log("[VERIFY] ─── 阶段四：VERIFY — 记录结果与错误检查 ───");
             for (_, tool_call_id, result, st_change) in &results {
                 let tool_name_for_log = filtered.iter()
                     .find(|ft| &ft.id == tool_call_id)
@@ -726,6 +942,11 @@ ERROR_LOG：出现过的报错与解决方案
                         .and_then(|v| v.as_str())
                         .unwrap_or("任务完成")
                         .to_string();
+                    self.send_stage_log("[REVIEW] ┌──────────────────────────────────────┐");
+                    self.send_stage_log("[REVIEW] │     阶段五：REVIEW — 代码审查        │");
+                    self.send_stage_log("[REVIEW] └──────────────────────────────────────┘");
+                    self.send_stage_log("[REVIEW] task_complete 触发，准备交付");
+                    self.send_stage_log(&format!("[REVIEW] 总结摘要: {}", final_summary));
                 }
 
                 // 更新进度
@@ -743,6 +964,7 @@ ERROR_LOG：出现过的报错与解决方案
                 // 记录错误
                 if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
                     if !err.is_empty() {
+                        log::warn!("[VERIFY] ⚠ 工具 [{}] 返回错误: {}", tool_name_for_log, err);
                         self.progress.error_log.push(format!("[{}] {}", tool_name_for_log, err));
                     }
                 }
@@ -766,6 +988,15 @@ ERROR_LOG：出现过的报错与解决方案
             if should_stop {
                 log::info!("[Agent] task_complete 触发，结束循环");
                 log::info!("[Agent] 总迭代: {}, 工具调用: {}", self.iteration_count, all_tool_calls.len());
+                // ============ 阶段六：SHIP — 交付完成 ============
+                self.send_stage_log("[SHIP]   ╔══════════════════════════════════════════╗");
+                self.send_stage_log("[SHIP]   ║       阶段六：SHIP — 交付完成            ║");
+                self.send_stage_log("[SHIP]   ╚══════════════════════════════════════════╝");
+                self.send_stage_log(&format!("[SHIP]   总迭代次数: {}", self.iteration_count));
+                self.send_stage_log(&format!("[SHIP]   工具调用数: {}", all_tool_calls.len()));
+                self.send_stage_log(&format!("[SHIP]   工具列表: {:?}", all_tool_calls));
+                self.send_stage_log(&format!("[SHIP]   错误记录: {} 条", self.progress.error_log.len()));
+                self.send_stage_log(&format!("[SHIP]   已完成: {}", self.progress.completed.len()));
                 // 轨迹录制：任务完成
                 if let Some(ref mut recorder) = self.recorder {
                     recorder.finalize(true, Some(&final_summary)).await;
@@ -1227,6 +1458,13 @@ async fn execute_tool_parallel(
                         "message": format!("启动失败: {}", e)
                     }),
                 }
+            }
+
+            // === 桌面控制工具 (cua-driver) ===
+            "desktop_screenshot" | "desktop_click" | "desktop_type"
+            | "desktop_key" | "desktop_list_windows" | "desktop_focus_window"
+            | "desktop_scroll" => {
+                desktop_control::execute_desktop_tool(&ctx.desktop, name, &args).await
             }
 
             // CLI-Anything 工具

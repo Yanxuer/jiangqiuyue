@@ -17,6 +17,7 @@ use backend_core::{
     cli_executor,
     cli_hub::CliHub,
     config::Config,
+    desktop_control::CuaDriverClient,
     doc_reader::{self, DocReader},
     file_tools::FileTools,
     llm::provider::LLMProvider,
@@ -59,6 +60,7 @@ struct MemoryAdd {
 #[derive(Debug, Serialize)]
 struct StatusResponse {
     status: String,
+    desktop_available: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -174,6 +176,14 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // 初始化桌面控制客户端（惰性启动，cua-driver 未安装时不会报错）
+    let desktop = Arc::new(Mutex::new(CuaDriverClient::new()));
+    let installed = CuaDriverClient::is_installed();
+    log::info!(
+        "[DesktopControl] cua-driver {}",
+        if installed { "已安装，首次调用时将自动启动" } else { "未安装，桌面控制工具将不可用" }
+    );
+
     let agent = Arc::new(Mutex::new(Agent::new(
         config.clone(),
         file_tools,
@@ -181,6 +191,7 @@ async fn main() -> anyhow::Result<()> {
         cli_hub,
         provider,
         recorder,
+        desktop,
     )));
 
     let (tx, _rx) = broadcast::channel::<String>(100);
@@ -249,7 +260,11 @@ async fn main() -> anyhow::Result<()> {
     let addr = "127.0.0.1:8000";
     log::info!("服务器启动于 http://{}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+        log::error!("[启动] 端口绑定失败: {} - 可能端口 8000 已被占用", e);
+        e
+    })?;
+    log::info!("[启动] 端口绑定成功，开始监听...");
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -257,9 +272,13 @@ async fn main() -> anyhow::Result<()> {
 
 // ==================== HTTP Handlers ====================
 
-async fn health_check() -> Json<StatusResponse> {
+async fn health_check(
+    State(_state): State<AppState>,
+) -> Json<StatusResponse> {
+    let desktop_available = backend_core::desktop_control::CuaDriverClient::is_installed();
     Json(StatusResponse {
         status: "ok".to_string(),
+        desktop_available,
     })
 }
 
@@ -321,23 +340,53 @@ async fn chat_handler(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Json<AgentResult> {
+    let req_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    log::info!("[Chat][{}] 收到请求: msg='{}' use_screen={:?}", req_id, req.message, req.use_screen);
+
     let img_b64 = if req.use_screen.unwrap_or(false) {
-        screen::capture_screen(1).ok()
+        match screen::capture_screen(1) {
+            Ok(b) => { log::info!("[Chat][{}] 截图成功 ({}字节)", req_id, b.len()); Some(b) }
+            Err(e) => { log::warn!("[Chat][{}] 截图失败: {}", req_id, e); None }
+        }
     } else {
         None
     };
 
+    // 创建日志通道，用于向前端实时推送 DEFINE→SHIP 各阶段日志
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::channel::<String>(200);
+    let ws_tx = state.tx.clone();
+
+    // 后台任务：将 agent 阶段日志转发到 WebSocket 广播
+    tokio::spawn(async move {
+        while let Some(msg) = log_rx.recv().await {
+            let payload = serde_json::json!({
+                "type": "stage_log",
+                "message": msg
+            }).to_string();
+            let _ = ws_tx.send(payload);
+        }
+    });
+
     let mut agent = state.agent.lock().await;
+    agent.set_log_sender(log_tx);
+    log::info!("[Chat][{}] 获取到 agent 锁，开始 run()", req_id);
     let result = agent
         .run(&req.message, img_b64.as_deref())
         .await
-        .unwrap_or_else(|e| AgentResult {
-            reply: format!("抱歉，出错了: {}", e),
-            tool_calls: Vec::new(),
-            iterations: 0,
-            progress: None,
+        .unwrap_or_else(|e| {
+            log::error!("[Chat][{}] agent.run() 失败: {}", req_id, e);
+            AgentResult {
+                reply: format!("抱歉，出错了: {}", e),
+                tool_calls: Vec::new(),
+                iterations: 0,
+                progress: None,
+            }
         });
 
+    log::info!("[Chat][{}] run() 完成: iterations={}, tool_calls={}", req_id, result.iterations, result.tool_calls.len());
     Json(result)
 }
 

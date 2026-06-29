@@ -31,6 +31,14 @@ pub const BACKOFF_MAX_SECS: u64 = 30;
 pub fn is_retryable_error(error_msg: &str) -> bool {
     let lower = error_msg.to_lowercase();
 
+    // HTTP 4xx 客户端错误（除 429 外）不可重试，优先判断
+    // 匹配 "API错误 (4xx)" 或 "(4xx)" 格式
+    if let Some(code) = extract_http_status(&lower) {
+        if code >= 400 && code < 500 && code != 429 {
+            return false;
+        }
+    }
+
     // 网络层错误关键词
     let network_keywords = [
         "connection",
@@ -43,9 +51,9 @@ pub fn is_retryable_error(error_msg: &str) -> bool {
         "eof",
         "broken pipe",
         "channel closed",
-        "request",
-        "send",
-        "connect",
+        "request failed",
+        "send failed",
+        "connect failed",
     ];
     if network_keywords.iter().any(|kw| lower.contains(kw)) {
         return true;
@@ -57,16 +65,33 @@ pub fn is_retryable_error(error_msg: &str) -> bool {
     }
 
     // HTTP 5xx 服务端错误
-    if lower.contains("500")
+    if lower.contains("5xx")
+        || lower.contains("500")
         || lower.contains("502")
         || lower.contains("503")
         || lower.contains("504")
-        || lower.contains("5xx")
     {
         return true;
     }
 
     false
+}
+
+/// 从错误消息中提取 HTTP 状态码
+fn extract_http_status(lower_msg: &str) -> Option<u16> {
+    // 匹配 "(404)" 或 "(500)" 等格式
+    for part in lower_msg.split('(') {
+        let trimmed = part.trim_start();
+        if let Some(closing) = trimmed.find(')') {
+            let num_str = &trimmed[..closing];
+            if let Ok(code) = num_str.parse::<u16>() {
+                if (100..600).contains(&code) {
+                    return Some(code);
+                }
+            }
+        }
+    }
+    None
 }
 
 // ==================== 通用重试函数 ====================

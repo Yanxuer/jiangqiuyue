@@ -1,3 +1,0 @@
-r"""
-Utility functions package
-"""

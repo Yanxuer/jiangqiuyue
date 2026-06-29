@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const http = require('http');
 
 let mainWindow = null;
@@ -99,6 +99,14 @@ function startRustBackend() {
     } else {
         backendExePath = path.join(__dirname, 'rust-dist', 'backend', 'backend.exe');
         cwd = path.join(__dirname, 'rust-dist');
+    }
+
+    // 尝试清理可能残留的旧后端进程（端口 8000）
+    try {
+        execSync('taskkill /f /fi "imagename eq backend.exe" 2>nul', { stdio: 'ignore' });
+        log('[后端启动] 已清理旧 backend.exe 进程');
+    } catch(e) {
+        // 忽略错误（没有找到进程是正常的）
     }
 
     log(`[后端启动] 模式: ${isPackaged ? 'production' : 'development'}`);

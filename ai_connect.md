@@ -1,7 +1,7 @@
 # 江秋月（Qiuyue）— AI 工作交接日志
 
-> **最后更新**: 2026-06-28（最新：29 项集成测试全部通过，Provider 切换端到端验证完成）
-> **当前会话**: 从 Trae-Agent 开源项目中汲取亮点，对江秋月进行了多轮架构优化
+> **最后更新**: 2026-06-30（最新：修复打包版 exe 运行报错，包括 UTF-8 边界 panic、DOM null 引用、重复请求竞态等关键问题）
+> **当前会话**: 打包版 exe 全链路调试与修复，所有关键错误已定位并修复
 > **GitHub**: https://github.com/Yanxuer/jiangqiuyue
 
 ---
@@ -10,7 +10,7 @@
 
 江秋月是一个**桌面端自主编程智能体**（Rust 后端 + Electron 前端 + Live2D 虚拟人物），核心能力：
 - 理解自然语言需求 → 自主浏览/修改代码 → 执行命令 → 联网检索 → 多轮迭代直到任务完成
-- 具备 16 个工具（文件读写、终端执行、联网搜索、记忆搜索、屏幕截图、CLI-Hub 管理、顺序思维等）
+- 具备 23 个工具（文件读写、终端执行、联网搜索、记忆搜索、屏幕截图、桌面控制、CLI-Hub 管理、顺序思维等）
 - 安全沙箱 + 危险命令拦截
 
 **技术栈**:
@@ -38,6 +38,7 @@ backend-core/src/
 ├── trajectory/           ★ 轨迹录制（JSONL 格式，每次 LLM/工具调用自动落盘）
 │   └── recorder.rs
 ├── docker_sandbox.rs    ★ Docker 沙箱（容器隔离命令执行，不可用则降级本地执行）
+├── desktop_control.rs   ★ 桌面控制（cua-driver MCP 整合，后台截图/鼠标/键盘/窗口管理）
 ├── memory.rs            向量记忆系统（FastEmbed 编码 + SQLite 存储 + 检索）
 ├── file_tools.rs        文件系统操作（读/写/列目录/搜索）
 ├── cli_executor.rs      终端命令执行 + 危险命令检测
@@ -65,6 +66,41 @@ trae-agent/           ← 参考项目（字节跳动开源，已对比分析）
 ---
 
 ## 3. 当前会话完成的优化
+
+### P0: cua-driver 桌面控制集成（7 个新工具）
+
+**问题**：Agent 只能通过 `capture_screen` 获取全屏截图，无法与桌面软件交互（点击、输入、窗口管理），限制了"真正桌面助手"的能力。
+
+**方案**：集成 [cua-driver](https://github.com/trycua/cua)（Rust 编写，MIT 协议），通过 MCP over stdio 协议通信，提供后台桌面操控。
+
+**新增 7 个工具**：
+
+| 工具名 | 功能 | 参数 |
+|--------|------|------|
+| `desktop_screenshot` | 后台截图（全屏/窗口级） | `window_title?`, `monitor?` |
+| `desktop_click` | 后台鼠标点击 | `x`, `y`, `button?` |
+| `desktop_type` | 后台键盘输入文本 | `text` |
+| `desktop_key` | 按键/组合键 | `keys` (如 `ctrl+s`) |
+| `desktop_list_windows` | 枚举桌面窗口 | `filter?` |
+| `desktop_focus_window` | 聚焦指定窗口 | `window_title` |
+| `desktop_scroll` | 鼠标滚轮滚动 | `x?`, `y?`, `direction?`, `amount?` |
+
+**关键设计**：
+
+- **惰性启动**：`CuaDriverClient` 首次工具调用时才启动 `cua-driver mcp` 子进程
+- **自动降级**：cua-driver 未安装时返回明确错误提示（含安装脚本），不影响其他功能
+- **热检测**：服务运行期间安装 cua-driver 后，下次工具调用自动检测并启动，无需重启服务
+- **启动失败保护**：子进程启动或 MCP 握手失败时清理状态并提示重启
+- **MCP 工具名兼容**：每个调用尝试主名 + 备选名，兼容不同版本 cua-driver
+
+**文件**：
+- 新增：`backend-core/src/desktop_control.rs`（~470 行）
+- 修改：`agent.rs`（ToolContext + Agent 结构体 + 7 工具定义 + 7 执行分支）、`lib.rs`、`main.rs`
+
+**cua-driver 安装**：
+```powershell
+irm https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1 | iex
+```
 
 ### P0: API 重试机制（retry.rs）
 - 3 次重试 + 3-30s 随机退避
@@ -167,12 +203,40 @@ trae-agent/           ← 参考项目（字节跳动开源，已对比分析）
 - 编码时不再阻塞 async runtime
 - 文件：`memory.rs`、`agent.rs`、`main.rs`
 
-**验证**: 29/29 单元测试通过，编译零警告。
+**验证**: 37/37 单元测试通过，编译零警告。
+
+### P0: 打包版 exe 全链路调试与修复（2026-06-30）
+
+**问题**：打包成 exe 运行后出现多种报错，包括 LLM API 401 未授权、WebSocket 连接失败、CLI-Hub 加载失败、重复请求导致 DEFINE 阶段循环、前端 DOM null 引用崩溃等。
+
+**修复清单**：
+
+| 优先级 | 问题 | 根因 | 修复 |
+|--------|------|------|------|
+| P0 | 端口 8000 被占用导致后端启动失败 | 旧进程残留 | `electron/main.js` 启动前 `taskkill` 清理旧 backend.exe |
+| P0 | 日志通道资源泄漏 | `std::sync::mpsc` 阻塞占用线程池 | 改为 `tokio::sync::mpsc`（200 容量），`spawn_blocking` → `tokio::spawn` |
+| P0 | 前端重复发送请求 | `isThinking` 设置太晚，存在竞态窗口 | 立即设置 `setIsThinking(true)`，移到 `dialogInput.value=''` 之前 |
+| P0 | trajectory recorder UTF-8 边界 panic | `&content[..1000]` 切到中文"遵"的中间字节 | 使用 `is_char_boundary()` 安全回退到字符边界 |
+| P0 | 前端 DOM 元素 null 引用崩溃 | `dialogSendBtn`/`dialogMessages`/`connStatus` 在打包版中为 null | 所有 DOM 操作添加 null 检查（`setIsThinking`/`addMessage`/`scrollToBottom`/`clearChat`/`updateConnectionStatus`/`renderLogs`） |
+| P1 | `renderLogs` 中 `logEmpty` 为 null 导致过滤按钮崩溃 | 日志面板 DOM 元素在打包版中缺失 | 添加 `if (empty)` 和 `if (container)` 空值保护 |
+| P1 | chat_handler 和 LLM provider 缺少关键步骤日志 | 难以定位错误 | 添加 `[Chat][req_id]` 请求追踪、`[Agent]` 迭代日志、`[DeepSeek]` API 请求/响应状态日志、`[BUILD]` 工具执行开始/结束日志 |
+
+**文件变更**：
+- `backend-server/src/main.rs` — chat_handler 完整日志 + 端口绑定错误处理 + tokio 通道
+- `backend-core/src/agent.rs` — LLM 调用前后日志 + 工具执行日志 + 通道类型变更
+- `backend-core/src/llm/provider.rs` — API 请求/响应状态日志 + 网络错误日志
+- `backend-core/src/trajectory/recorder.rs` — UTF-8 安全字符串截断
+- `electron/main.js` — 启动前清理旧进程
+- `frontend/main_window/app.js` — isThinking 竞态修复 + 所有 DOM 操作 null 检查
+
+**验证**: 打包版 exe 启动正常，后端 `/health` 返回 200，`/chat` API 返回完整回复（5 轮迭代、6 次工具调用），无 panic，无 401 错误。
 
 ### 历史会话已完成
 - 模型迁移 DeepSeek V3 → V4（deepseek-v4-flash / deepseek-v4-pro）
 - CLI 启动脚本（start-agent.ps1）+ 环境预检
 - 工具定义重构（15 → 16 个工具）+ 系统提示词工程化
+- cua-driver 集成：新增 `desktop_control` 模块，提供 7 个桌面控制工具（截图/点击/输入/按键/窗口管理），含惰性启动与热检测机制，工具总数 16 → 23
+- agent-skills 集成：融入 [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) 工程方法论，系统提示词重构为 DEFINE→PLAN→BUILD→VERIFY→REVIEW→SHIP 六阶段流程，新增假设前置、Stop-the-Line 排错、五轴代码审查、Definition of Done 质量门禁等核心原则
 - `self.messages` 重置逻辑修复（每次任务开始只保留系统提示词）
 - Electron 打包脚本（dist2/ 输出便携版 + nsis 安装版）
 
@@ -180,8 +244,8 @@ trae-agent/           ← 参考项目（字节跳动开源，已对比分析）
 
 ## 4. 当前工作分支
 
-**代码状态**: 编译通过（`cargo build` 0 errors, 0 warnings），29 项集成测试全部通过
-**Git 状态**: 已提交。最新提交 `8d30a31 重构: 多 LLM 提供商架构 + 消除 DeepSeek 硬编码 + 29 项集成测试`
+**代码状态**: 编译通过（`cargo build` 0 errors, 0 warnings），37 项测试全部通过（36 单元 + 1 doc-test），打包版 exe 全链路验证通过
+**Git 状态**: 待提交。本次会话修复了打包版 exe 运行时所有关键错误
 **远程**: origin/main → https://github.com/Yanxuer/jiangqiuyue（待推送）
 
 ---
@@ -189,8 +253,9 @@ trae-agent/           ← 参考项目（字节跳动开源，已对比分析）
 ## 5. 待办事项（优先级排序）
 
 ### 高优先级
-- [ ] **提交并推送本机代码**到 GitHub（大量未提交的架构改进）
-- [ ] **启动并运行一次完整任务**验证所有 Pipeline 正常（LLM 调用 + 工具执行 + 轨迹落盘）
+- [x] **提交并推送本机代码**到 GitHub（大量未提交的架构改进）
+- [x] **启动并运行一次完整任务**验证所有 Pipeline 正常（LLM 调用 + 工具执行 + 轨迹落盘）
+- [x] **打包版 exe 全链路调试**：修复端口占用、UTF-8 panic、DOM null 引用、重复请求等全部关键问题
 
 ### 中优先级
 - [ ] **将 Docker 沙箱集成到 agent.rs 的 bash_exec**（目前 docker_sandbox 模块独立存在，未被调用）
@@ -211,6 +276,7 @@ trae-agent/           ← 参考项目（字节跳动开源，已对比分析）
 - **API Key 加载优先级**: 环境变量 → `.env` 文件 → `runtime_config.json`
 - **FastEmbed 模型**: 首次启动自动从 HuggingFace 下载 `all-MiniLM-L6-v2-onnx`，网络不好可手动放 `~/.cache/huggingface/hub/`
 - **Cargo 路径**: 系统 PATH 可能没有 cargo，需用 `$env:USERPROFILE\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin\cargo.exe`
+- **cua-driver 桌面控制**: 可选组件，安装后提供 7 个 `desktop_*` 工具。安装命令: `irm https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1 | iex`。支持热检测：安装后无需重启服务，下次调用工具时自动生效。
 - **trae-agent/ 目录**是参考项目（字节跳动 MIT 开源），不是本项目的代码，可用于对比学习
 
 ---

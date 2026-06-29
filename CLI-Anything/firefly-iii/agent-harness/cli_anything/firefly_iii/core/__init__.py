@@ -1,3 +1,0 @@
-r"""
-Core functionality package
-"""

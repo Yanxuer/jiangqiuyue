@@ -83,9 +83,13 @@ impl TrajectoryRecorder {
                 let mut obj = serde_json::Map::new();
                 obj.insert("role".to_string(), serde_json::Value::String(m.role.clone()));
                 if let Some(ref content) = m.content {
-                    // 截取过长内容，避免文件膨胀
+                    // 截取过长内容，避免文件膨胀（按字符边界安全截断）
                     let truncated = if content.len() > 1000 {
-                        format!("{}... [共 {} 字符]", &content[..1000], content.len())
+                        let mut end = 1000;
+                        while end > 0 && !content.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        format!("{}... [共 {} 字符]", &content[..end], content.len())
                     } else {
                         content.clone()
                     };
